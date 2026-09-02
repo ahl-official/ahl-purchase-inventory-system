@@ -1,26 +1,234 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-heading: var(--font-sans);
+
+  /* Brand. Used for identity, active navigation, focus and selected state.
+     Never for decoration -- if it is teal, it means something. */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-brand-border: var(--brand-border);
+
+  /* Semantic state. Reserved for status only, never for emphasis. */
+  --color-success: var(--success);
+  --color-success-subtle: var(--success-subtle);
+  --color-warning: var(--warning);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-danger: var(--danger);
+  --color-danger-subtle: var(--danger-subtle);
+
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/*
+  Neutrals carry a slight warm cast (hue 70, very low chroma) rather than pure
+  grey. It reads as a considered surface instead of a default Tailwind palette,
+  and keeps printed bill photos from looking blue against the canvas.
+*/
+:root {
+  --background: oklch(0.985 0.002 70);
+  --foreground: oklch(0.22 0.007 70);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.007 70);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.007 70);
+
+  --primary: oklch(0.24 0.008 70);
+  --primary-foreground: oklch(0.99 0.002 70);
+  --secondary: oklch(0.965 0.003 70);
+  --secondary-foreground: oklch(0.26 0.008 70);
+  --muted: oklch(0.965 0.003 70);
+  --muted-foreground: oklch(0.518 0.009 70);
+  --accent: oklch(0.958 0.004 70);
+  --accent-foreground: oklch(0.26 0.008 70);
+
+  --brand: oklch(0.505 0.083 196);
+  --brand-foreground: oklch(0.99 0.002 70);
+  --brand-subtle: oklch(0.962 0.022 196);
+  --brand-border: oklch(0.86 0.045 196);
+
+  --success: oklch(0.53 0.108 156);
+  --success-subtle: oklch(0.962 0.03 156);
+  --warning: oklch(0.62 0.132 72);
+  --warning-subtle: oklch(0.968 0.038 82);
+  --danger: oklch(0.545 0.196 20);
+  --danger-subtle: oklch(0.966 0.026 20);
+
+  --destructive: oklch(0.545 0.196 20);
+  --border: oklch(0.912 0.004 70);
+  --input: oklch(0.912 0.004 70);
+  --ring: oklch(0.505 0.083 196);
+
+  --chart-1: oklch(0.505 0.083 196);
+  --chart-2: oklch(0.53 0.108 156);
+  --chart-3: oklch(0.62 0.132 72);
+  --chart-4: oklch(0.44 0.06 250);
+  --chart-5: oklch(0.545 0.196 20);
+
+  --radius: 0.5rem;
+
+  --sidebar: oklch(0.985 0.002 70);
+  --sidebar-foreground: oklch(0.22 0.007 70);
+  --sidebar-primary: oklch(0.24 0.008 70);
+  --sidebar-primary-foreground: oklch(0.99 0.002 70);
+  --sidebar-accent: oklch(0.965 0.003 70);
+  --sidebar-accent-foreground: oklch(0.26 0.008 70);
+  --sidebar-border: oklch(0.912 0.004 70);
+  --sidebar-ring: oklch(0.505 0.083 196);
+}
+
+.dark {
+  --background: oklch(0.165 0.006 70);
+  --foreground: oklch(0.965 0.003 70);
+  --card: oklch(0.208 0.007 70);
+  --card-foreground: oklch(0.965 0.003 70);
+  --popover: oklch(0.208 0.007 70);
+  --popover-foreground: oklch(0.965 0.003 70);
+
+  --primary: oklch(0.94 0.004 70);
+  --primary-foreground: oklch(0.208 0.007 70);
+  --secondary: oklch(0.268 0.008 70);
+  --secondary-foreground: oklch(0.965 0.003 70);
+  --muted: oklch(0.268 0.008 70);
+  --muted-foreground: oklch(0.706 0.009 70);
+  --accent: oklch(0.278 0.008 70);
+  --accent-foreground: oklch(0.965 0.003 70);
+
+  --brand: oklch(0.7 0.093 196);
+  --brand-foreground: oklch(0.165 0.006 70);
+  --brand-subtle: oklch(0.29 0.045 196);
+  --brand-border: oklch(0.4 0.06 196);
+
+  --success: oklch(0.72 0.13 156);
+  --success-subtle: oklch(0.28 0.05 156);
+  --warning: oklch(0.79 0.135 78);
+  --warning-subtle: oklch(0.3 0.055 78);
+  --danger: oklch(0.68 0.17 22);
+  --danger-subtle: oklch(0.3 0.07 22);
+
+  --destructive: oklch(0.68 0.17 22);
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.7 0.093 196);
+
+  --chart-1: oklch(0.7 0.093 196);
+  --chart-2: oklch(0.72 0.13 156);
+  --chart-3: oklch(0.79 0.135 78);
+  --chart-4: oklch(0.65 0.09 250);
+  --chart-5: oklch(0.68 0.17 22);
+
+  --sidebar: oklch(0.208 0.007 70);
+  --sidebar-foreground: oklch(0.965 0.003 70);
+  --sidebar-primary: oklch(0.7 0.093 196);
+  --sidebar-primary-foreground: oklch(0.165 0.006 70);
+  --sidebar-accent: oklch(0.268 0.008 70);
+  --sidebar-accent-foreground: oklch(0.965 0.003 70);
+  --sidebar-border: oklch(1 0 0 / 11%);
+  --sidebar-ring: oklch(0.7 0.093 196);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    text-rendering: optimizeLegibility;
+  }
+
+  /*
+    Quantities, balances and money are compared down a column constantly in this
+    app. Lining tabular figures keep those columns from jittering as digits change.
+  */
+  .tabular,
+  input[type="number"],
+  table td,
+  table th {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /* Transaction and handover IDs (TXN-, HND-, PR-) read as data, not prose. */
+  .id-text {
+    @apply font-mono text-[0.8em] tracking-tight;
+  }
+
+  /* iOS zooms the page when a focused input is under 16px. */
+  @supports (-webkit-touch-callout: none) {
+    input,
+    select,
+    textarea {
+      font-size: max(16px, 1rem);
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /*
+    One definition for every native <select> in the app. Master data is always a
+    dropdown (never free text), so this selector is load-bearing.
+  */
+  .field-control {
+    @apply h-11 w-full rounded-lg border border-input bg-card px-3 text-[0.9375rem] text-foreground
+      transition-colors outline-none
+      focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/25
+      disabled:cursor-not-allowed disabled:bg-muted disabled:opacity-60;
+  }
+
+  select.field-control {
+    @apply appearance-none bg-no-repeat pr-9;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23737373' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.75rem center;
+    background-size: 1rem;
+  }
 }
