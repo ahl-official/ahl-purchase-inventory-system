@@ -74,7 +74,7 @@ modelled a system nobody has built. Schema is defined once in
 | Tab | Columns |
 |---|---|
 | `PRODUCTS` | ProductID, Name, CategoryID, IssueUOM, PurchaseUOM, ConvFactor, Cost, GSTPercent, VendorID, ReorderLevel, Active, Notes |
-| `PEOPLE` | UserID, Email, Name, Role, LocationID, ApprovalLimit, Active |
+| `PEOPLE` | UserID, Email, Name, Role, LocationID, ApprovalLimit, Active, PasswordHash, PasswordSalt |
 | `LISTS` | Type, Code, Name, Extra, Active — `Type` ∈ CATEGORY \| VENDOR \| LOCATION \| UOM |
 | `LEDGER` | TxnID, Date, Type, Direction, ProductID, Qty, UOM, QtyBase, LocationID, CategoryID, PersonID, VendorID, HandoverID, PORef, InvoiceNo, Amount, BillPhotoURL, Actor, Status, Notes |
 | `REQUESTS` | RequestID, Date, ProductID, Qty, RequestedBy, Urgency, EstValue, Status, ApprovedBy, ApprovedAt, Actor, Notes |
@@ -146,9 +146,6 @@ modelled a system nobody has built. Schema is defined once in
 
 ```env
 AUTH_SECRET="<set-in-local-env>"
-ADMIN_EMAIL="<admin-email>"          ADMIN_PASSWORD="<set-in-local-env>"
-PURCHASE_EMAIL="<purchase-email>"    PURCHASE_PASSWORD="<set-in-local-env>"
-DISTRIBUTOR_EMAIL="<distributor-email>" DISTRIBUTOR_PASSWORD="<set-in-local-env>"
 NEXT_PUBLIC_APPS_SCRIPT_URL="https://script.google.com/macros/s/AKfycbwSwWsSPEe5uDGLiMRt-H4XH0bz4ICG-S6Dc40YjUVtvt193A5dAz37kUdzA6S-zMc7XQ/exec"
 HMAC_SECRET="<set-in-local-env-and-apps-script-properties>"
 ```
@@ -162,6 +159,12 @@ HMAC_SECRET="<set-in-local-env-and-apps-script-properties>"
 |---|---|
 | `SHEET_ID_DB` | `16LFKuCYPOk46dWalYXHcoDYuqPf6mn213pfSp0ukEe4` |
 | `HMAC_SECRET` | must match `.env` **exactly** |
+
+Login emails, roles and salted password hashes live in `PEOPLE`; account
+passwords are not Vercel environment variables. To provision or reset one,
+temporarily set `PASSWORD_EMAIL` and `PASSWORD_VALUE` in Script Properties,
+run `updateUserPasswordFromScriptProperties()`, and confirm that the function
+deleted both temporary plaintext properties.
 
 Without `HMAC_SECRET`, `Validation.gs` falls back to
 `DEV_SECRET_DO_NOT_USE_IN_PROD` and every signature fails with FORBIDDEN while

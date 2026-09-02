@@ -31,7 +31,8 @@ var SCHEMA = {
     "ProductType"
   ],
   PEOPLE: [
-    "UserID", "Email", "Name", "Role", "LocationID", "ApprovalLimit", "Active"
+    "UserID", "Email", "Name", "Role", "LocationID", "ApprovalLimit", "Active",
+    "PasswordHash", "PasswordSalt"
   ],
   // Type is one of CATEGORY | VENDOR | LOCATION | UOM.
   LISTS: ["Type", "Code", "Name", "Extra", "Active"],
@@ -233,6 +234,28 @@ function migratePeople(source, target) {
   var data = sheet.getDataRange().getValues();
   var h = headerMap(data);
   var rows = [];
+  var existingPasswordsById = {};
+  var existingPasswordsByEmail = {};
+  var targetSheet = target.getSheetByName("PEOPLE");
+
+  // setupDatabase() is intentionally rerunnable. Preserve credentials that
+  // were provisioned after the first migration instead of blanking them when
+  // the PEOPLE master data is refreshed from the source workbook.
+  if (targetSheet && targetSheet.getLastRow() > 1) {
+    var targetData = targetSheet.getDataRange().getValues();
+    var targetHeaders = headerMap(targetData);
+    for (var existingIndex = 1; existingIndex < targetData.length; existingIndex++) {
+      var existingRow = targetData[existingIndex];
+      var existingCredentials = {
+        hash: targetHeaders.PasswordHash === undefined ? "" : existingRow[targetHeaders.PasswordHash],
+        salt: targetHeaders.PasswordSalt === undefined ? "" : existingRow[targetHeaders.PasswordSalt]
+      };
+      var existingId = String(existingRow[targetHeaders.UserID] || "").trim();
+      var existingEmail = String(existingRow[targetHeaders.Email] || "").trim().toLowerCase();
+      if (existingId) existingPasswordsById[existingId] = existingCredentials;
+      if (existingEmail) existingPasswordsByEmail[existingEmail] = existingCredentials;
+    }
+  }
 
   for (var i = 1; i < data.length; i++) {
     var r = data[i];
@@ -247,15 +270,20 @@ function migratePeople(source, target) {
     }
 
     var locations = String(r[h["AllowedLocations"]] || "").trim();
+    var userId = String(r[h["UserID"]] || "").trim();
+    var savedCredentials = existingPasswordsById[userId] ||
+      existingPasswordsByEmail[email.toLowerCase()] || { hash: "", salt: "" };
 
     rows.push([
-      r[h["UserID"]],
+      userId,
       email,
       name,
       r[h["Roles"]],
       locations === "ALL" ? "ALL" : locations.split(",")[0] || "",
       r[h["ApprovalLimit"]] || 0,
-      normaliseBool(r[h["Active"]])
+      normaliseBool(r[h["Active"]]),
+      savedCredentials.hash,
+      savedCredentials.salt
     ]);
   }
 

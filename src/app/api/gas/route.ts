@@ -15,7 +15,9 @@ import { callAppsScript, type AppsScriptAction } from "@/lib/api";
 
 // Which roles may invoke which action. Mirrors the middleware's route gating so
 // a PurchaseCoordinator cannot issue stock by hand-crafting a fetch.
-const ACTION_ROLES: Record<AppsScriptAction, string[]> = {
+type SessionAction = Exclude<AppsScriptAction, "auth.login">;
+
+const ACTION_ROLES: Record<SessionAction, string[]> = {
   "stock.issue": ["ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the
@@ -29,7 +31,7 @@ const ACTION_ROLES: Record<AppsScriptAction, string[]> = {
   "dashboard.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 
-function isKnownAction(value: unknown): value is AppsScriptAction {
+function isKnownAction(value: unknown): value is SessionAction {
   return typeof value === "string" && value in ACTION_ROLES;
 }
 

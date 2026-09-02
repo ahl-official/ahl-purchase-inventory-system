@@ -30,7 +30,10 @@ function doPost(e) {
 
     payload = JSON.parse(contents);
 
-    if (!isActiveUser(payload.actor)) {
+    // Login must be able to return the same generic rejection for an unknown
+    // email and a wrong password. Every other action still requires an active
+    // directory entry before the handler runs.
+    if (payload.action !== "auth.login" && !isActiveUser(payload.actor)) {
       return respondJson(
         {
           success: false,
@@ -55,6 +58,9 @@ function doPost(e) {
       var result;
 
       switch (payload.action) {
+        case "auth.login":
+          result = processAuthLogin(payload);
+          break;
         case "stock.issue":
           result = processStockIssue(payload);
           break;

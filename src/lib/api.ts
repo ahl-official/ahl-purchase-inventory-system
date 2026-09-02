@@ -18,6 +18,7 @@
 import { createHmac } from "node:crypto";
 
 export type AppsScriptAction =
+  | "auth.login"
   | "stock.issue"
   | "stock.receive"
   | "purchase.request"

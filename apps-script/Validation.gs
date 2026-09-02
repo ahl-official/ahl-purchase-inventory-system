@@ -48,6 +48,153 @@ function isActiveUser(email) {
   return !!user && isTruthy(user.Active);
 }
 
+// ----------------------------------------------------------- authentication
+
+/** Passwords are stored only as salted HMAC hashes in PEOPLE. */
+function passwordPepper(createIfMissing) {
+  var props = PropertiesService.getScriptProperties();
+  var pepper = props.getProperty("PASSWORD_PEPPER");
+
+  if (!pepper && createIfMissing) {
+    pepper = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+    props.setProperty("PASSWORD_PEPPER", pepper);
+  }
+
+  if (!pepper) {
+    throw new Error("AUTH_NOT_CONFIGURED: Run updateUserPasswordFromScriptProperties once.");
+  }
+  return pepper;
+}
+
+function passwordHash(password, salt) {
+  var bytes = Utilities.computeHmacSha256Signature(
+    String(password) + "\n" + String(salt),
+    passwordPepper(false),
+    Utilities.Charset.UTF_8
+  );
+  return bytes.map(function (b) {
+    var value = b < 0 ? b + 256 : b;
+    return ("0" + value.toString(16)).slice(-2);
+  }).join("");
+}
+
+function constantTimeEqual(left, right) {
+  var a = String(left || "");
+  var b = String(right || "");
+  var different = a.length ^ b.length;
+  var length = Math.max(a.length, b.length);
+
+  for (var i = 0; i < length; i++) {
+    different |= (a.charCodeAt(i % Math.max(a.length, 1)) || 0) ^
+      (b.charCodeAt(i % Math.max(b.length, 1)) || 0);
+  }
+  return different === 0;
+}
+
+function appRole(value) {
+  var role = String(value || "").trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (role === "admin" || role === "management" || role === "owner") return "Admin";
+  if (role === "purchase" || role === "purchasecoordinator") return "PurchaseCoordinator";
+  if (role === "distribution" || role === "productdistributor" || role === "distributor") {
+    return "ProductDistributor";
+  }
+  return "";
+}
+
+function loginCacheKey(email) {
+  return "LOGIN_FAIL_" + String(email || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "_");
+}
+
+/** Called only by NextAuth through the signed server-to-server transport. */
+function processAuthLogin(payload) {
+  var req = payload.data || {};
+  var email = String(req.email || payload.actor || "").trim().toLowerCase();
+  var suppliedPassword = String(req.password || "");
+  var cache = CacheService.getScriptCache();
+  var cacheKey = loginCacheKey(email);
+  var failures = Number(cache.get(cacheKey)) || 0;
+
+  if (failures >= 5) {
+    throw new Error("TOO_MANY_ATTEMPTS: Too many failed sign-in attempts. Wait 15 minutes.");
+  }
+
+  var user = getUser(email);
+  var valid = !!user && isTruthy(user.Active) && !!user.PasswordHash && !!user.PasswordSalt;
+  if (valid) {
+    valid = constantTimeEqual(passwordHash(suppliedPassword, user.PasswordSalt), user.PasswordHash);
+  }
+
+  var role = valid ? appRole(user.Role) : "";
+  if (!valid || !role) {
+    cache.put(cacheKey, String(failures + 1), 15 * 60);
+    throw new Error("INVALID_CREDENTIALS: Invalid email or password.");
+  }
+
+  cache.remove(cacheKey);
+  audit(email, "auth.login", user.UserID || "", { role: role });
+
+  return {
+    id: String(user.UserID || email),
+    email: email,
+    name: String(user.Name || email),
+    role: role,
+    branchId: String(user.LocationID || "HO")
+  };
+}
+
+/**
+ * One-user password provisioning and reset helper.
+ *
+ * In Apps Script Project Settings, temporarily set PASSWORD_EMAIL and
+ * PASSWORD_VALUE, run this function, then both temporary properties are
+ * deleted. Only PasswordHash and PasswordSalt remain in PEOPLE.
+ */
+function updateUserPasswordFromScriptProperties() {
+  var props = PropertiesService.getScriptProperties();
+  var email = String(props.getProperty("PASSWORD_EMAIL") || "").trim().toLowerCase();
+  var password = String(props.getProperty("PASSWORD_VALUE") || "");
+
+  if (!email || password.length < 12) {
+    throw new Error("VALIDATION: Set PASSWORD_EMAIL and a PASSWORD_VALUE of at least 12 characters.");
+  }
+
+  // Generate and retain one server-side pepper before hashing the first user.
+  passwordPepper(true);
+
+  var t = table("PEOPLE");
+  if (!("PasswordHash" in t.idx) || !("PasswordSalt" in t.idx)) {
+    throw new Error("SCHEMA_ERROR: Run setupDatabase() to add password columns first.");
+  }
+
+  var lastRow = t.sheet.getLastRow();
+  var values = lastRow < 2 ? [] :
+    t.sheet.getRange(2, 1, lastRow - 1, t.headers.length).getValues();
+  var rowNumber = -1;
+
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][t.idx.Email] || "").trim().toLowerCase() === email) {
+      rowNumber = i + 2;
+      break;
+    }
+  }
+
+  if (rowNumber === -1) {
+    props.deleteProperty("PASSWORD_VALUE");
+    throw new Error("NOT_FOUND: No PEOPLE row for " + email + ".");
+  }
+
+  var salt = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+  t.sheet.getRange(rowNumber, t.idx.PasswordSalt + 1).setValue(salt);
+  t.sheet.getRange(rowNumber, t.idx.PasswordHash + 1).setValue(passwordHash(password, salt));
+  SpreadsheetApp.flush();
+
+  props.deleteProperty("PASSWORD_EMAIL");
+  props.deleteProperty("PASSWORD_VALUE");
+  audit("apps-script-admin", "auth.password.updated", email, { user: email });
+
+  return "Password hash updated for " + email + ". Temporary password properties deleted.";
+}
+
 // ----------------------------------------------------------------- config
 
 /**

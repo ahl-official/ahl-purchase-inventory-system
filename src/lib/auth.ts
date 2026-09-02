@@ -1,7 +1,18 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import { callAppsScript } from "@/lib/api";
+import { authConfig } from "@/lib/auth.config";
+
+interface DatabaseLogin {
+  id: string;
+  email: string;
+  name: string;
+  role: "Admin" | "PurchaseCoordinator" | "ProductDistributor";
+  branchId: string;
+}
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  ...authConfig,
   providers: [
     Credentials({
       credentials: {
@@ -11,47 +22,25 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
 
-        const email = credentials.email as string;
-        const password = credentials.password as string;
+        const email = String(credentials.email).trim().toLowerCase();
+        const password = String(credentials.password);
 
-        // Admin
-        if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
-          return { id: "1", name: "Management", email, role: "Admin", branchId: "HO" };
-        }
-        
-        // Purchase Coordinator (Satvik)
-        if (email === process.env.PURCHASE_EMAIL && password === process.env.PURCHASE_PASSWORD) {
-          return { id: "2", name: "Satvik", email, role: "PurchaseCoordinator", branchId: "HO" };
-        }
+        const result = await callAppsScript<DatabaseLogin, { email: string; password: string }>({
+          action: "auth.login",
+          actor: email,
+          data: { email, password },
+        });
 
-        // Floor Distributor (Hitesh)
-        if (email === process.env.DISTRIBUTOR_EMAIL && password === process.env.DISTRIBUTOR_PASSWORD) {
-          return { id: "3", name: "Hitesh", email, role: "ProductDistributor", branchId: "HO" };
-        }
+        if (!result.ok) return null;
 
-        return null; // Invalid credentials
+        return {
+          id: result.data.id,
+          name: result.data.name,
+          email: result.data.email,
+          role: result.data.role,
+          branchId: result.data.branchId,
+        };
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        // @ts-expect-error - role/branchId are augmented on User in src/types/next-auth.d.ts
-        token.role = user.role;
-        // @ts-expect-error - role/branchId are augmented on User in src/types/next-auth.d.ts
-        token.branchId = user.branchId;
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (token && session.user) {
-        session.user.role = token.role as string;
-        session.user.branchId = token.branchId as string;
-      }
-      return session;
-    },
-  },
-  session: {
-    strategy: "jwt",
-  },
 });
