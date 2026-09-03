@@ -34,6 +34,9 @@ var SCHEMA = {
     "UserID", "Email", "Name", "Role", "LocationID", "ApprovalLimit", "Active",
     "PasswordHash", "PasswordSalt"
   ],
+  // Temporary simple login store. USER.UserID is the email entered at sign-in;
+  // the role and location continue to come from PEOPLE.
+  USER: ["UserID", "Password", "Active"],
   // Type is one of CATEGORY | VENDOR | LOCATION | UOM.
   LISTS: ["Type", "Code", "Name", "Extra", "Active"],
   LEDGER: [
@@ -84,6 +87,7 @@ function setupDatabase() {
   var TAB_COLORS = {
     PRODUCTS: "#1A73E8",
     PEOPLE: "#E37400",
+    USER: "#0F9D58",
     LISTS: "#5F6368",
     LEDGER: "#0F9D58",
     REQUESTS: "#F4B400",

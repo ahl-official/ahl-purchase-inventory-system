@@ -50,34 +50,11 @@ function isActiveUser(email) {
 
 // ----------------------------------------------------------- authentication
 
-/** Passwords are stored only as salted HMAC hashes in PEOPLE. */
-function passwordPepper(createIfMissing) {
-  var props = PropertiesService.getScriptProperties();
-  var pepper = props.getProperty("PASSWORD_PEPPER");
-
-  if (!pepper && createIfMissing) {
-    pepper = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
-    props.setProperty("PASSWORD_PEPPER", pepper);
-  }
-
-  if (!pepper) {
-    throw new Error("AUTH_NOT_CONFIGURED: Run updateUserPasswordFromScriptProperties once.");
-  }
-  return pepper;
-}
-
-function passwordHash(password, salt) {
-  var bytes = Utilities.computeHmacSha256Signature(
-    String(password) + "\n" + String(salt),
-    passwordPepper(false),
-    Utilities.Charset.UTF_8
-  );
-  return bytes.map(function (b) {
-    var value = b < 0 ? b + 256 : b;
-    return ("0" + value.toString(16)).slice(-2);
-  }).join("");
-}
-
+/**
+ * Temporary simple-login comparison for the USER tab.
+ * Passwords in that tab are visible to Sheet editors; replace this with a
+ * hashed credential store before giving non-admins editor access to the sheet.
+ */
 function constantTimeEqual(left, right) {
   var a = String(left || "");
   var b = String(right || "");
@@ -119,10 +96,10 @@ function processAuthLogin(payload) {
   }
 
   var user = getUser(email);
-  var valid = !!user && isTruthy(user.Active) && !!user.PasswordHash && !!user.PasswordSalt;
-  if (valid) {
-    valid = constantTimeEqual(passwordHash(suppliedPassword, user.PasswordSalt), user.PasswordHash);
-  }
+  var credential = findRecord("USER", "UserID", email);
+  var valid = !!user && !!credential && !!suppliedPassword && !!credential.Password &&
+    isTruthy(user.Active) && isTruthy(credential.Active) &&
+    constantTimeEqual(suppliedPassword, credential.Password);
 
   var role = valid ? appRole(user.Role) : "";
   if (!valid || !role) {
@@ -140,59 +117,6 @@ function processAuthLogin(payload) {
     role: role,
     branchId: String(user.LocationID || "HO")
   };
-}
-
-/**
- * One-user password provisioning and reset helper.
- *
- * In Apps Script Project Settings, temporarily set PASSWORD_EMAIL and
- * PASSWORD_VALUE, run this function, then both temporary properties are
- * deleted. Only PasswordHash and PasswordSalt remain in PEOPLE.
- */
-function updateUserPasswordFromScriptProperties() {
-  var props = PropertiesService.getScriptProperties();
-  var email = String(props.getProperty("PASSWORD_EMAIL") || "").trim().toLowerCase();
-  var password = String(props.getProperty("PASSWORD_VALUE") || "");
-
-  if (!email || password.length < 12) {
-    throw new Error("VALIDATION: Set PASSWORD_EMAIL and a PASSWORD_VALUE of at least 12 characters.");
-  }
-
-  // Generate and retain one server-side pepper before hashing the first user.
-  passwordPepper(true);
-
-  var t = table("PEOPLE");
-  if (!("PasswordHash" in t.idx) || !("PasswordSalt" in t.idx)) {
-    throw new Error("SCHEMA_ERROR: Run setupDatabase() to add password columns first.");
-  }
-
-  var lastRow = t.sheet.getLastRow();
-  var values = lastRow < 2 ? [] :
-    t.sheet.getRange(2, 1, lastRow - 1, t.headers.length).getValues();
-  var rowNumber = -1;
-
-  for (var i = 0; i < values.length; i++) {
-    if (String(values[i][t.idx.Email] || "").trim().toLowerCase() === email) {
-      rowNumber = i + 2;
-      break;
-    }
-  }
-
-  if (rowNumber === -1) {
-    props.deleteProperty("PASSWORD_VALUE");
-    throw new Error("NOT_FOUND: No PEOPLE row for " + email + ".");
-  }
-
-  var salt = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
-  t.sheet.getRange(rowNumber, t.idx.PasswordSalt + 1).setValue(salt);
-  t.sheet.getRange(rowNumber, t.idx.PasswordHash + 1).setValue(passwordHash(password, salt));
-  SpreadsheetApp.flush();
-
-  props.deleteProperty("PASSWORD_EMAIL");
-  props.deleteProperty("PASSWORD_VALUE");
-  audit("apps-script-admin", "auth.password.updated", email, { user: email });
-
-  return "Password hash updated for " + email + ". Temporary password properties deleted.";
 }
 
 // ----------------------------------------------------------------- config
