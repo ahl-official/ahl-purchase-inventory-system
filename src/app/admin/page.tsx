@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowRight, CheckSquare, ClipboardList, Layers, PackageCheck, PieChart } from "lucide-react";
 import { AppShell, PageContainer, PageHeader } from "@/components/app-shell";
 import { Panel } from "@/components/ui/field";
+import { OpeningApprovalsPanel } from "@/components/workflow-panels";
 
 /**
  * Management workspace. The three sections below are the Task 3 scope and are
@@ -81,6 +82,9 @@ export default function AdminDashboard() {
               </span>
             </Panel>
           ))}
+        </div>
+        <div className="pb-10">
+          <OpeningApprovalsPanel />
         </div>
       </PageContainer>
     </AppShell>

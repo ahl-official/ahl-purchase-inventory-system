@@ -147,8 +147,10 @@ export const MOCK_LOCATIONS = [
   { id: "LOC-07", name: "Receiving (Satvik)" },
 ];
 
-/** Where stock is issued from unless the user picks otherwise. */
-export const DEFAULT_LOCATION_ID = "LOC-01";
+export const HEAD_OFFICE_LOCATION_ID = "LOC-01";
+export const SALON_FLOOR_LOCATION_ID = "LOC-02";
+/** Hitesh issues only from Salon Floor stock. */
+export const DEFAULT_LOCATION_ID = SALON_FLOOR_LOCATION_ID;
 
 export const MOCK_VENDORS = [
   { id: "VND-01", name: "HairTech India", city: "Mumbai" },

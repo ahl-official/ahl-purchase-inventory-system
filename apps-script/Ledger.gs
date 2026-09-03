@@ -12,13 +12,24 @@
  */
 function processStockIssue(payload) {
   var req = payload.data;
-  var locationId = req.fromLocationId || getConfig("DefaultLocationID", "LOC-01");
+  var actorRole = appRole((getUser(payload.actor) || {}).Role);
+  var expectedLocation = actorRole === "PurchaseCoordinator" ?
+    getConfig("HeadOfficeLocationID", "LOC-01") :
+    getConfig("SalonFloorLocationID", "LOC-02");
+  var locationId = req.fromLocationId || expectedLocation;
+
+  if (actorRole !== "Admin" && locationId !== expectedLocation) {
+    throw new Error("FORBIDDEN: You can issue only from your own stock location.");
+  }
 
   if (!req.productId) throw new Error("VALIDATION: No product selected.");
   if (!req.splits || !req.splits.length) throw new Error("VALIDATION: No allocation given.");
 
   var product = getProduct(req.productId);
   if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
+  if (String(product.ProductType).trim().toLowerCase() === "furniture") {
+    throw new Error("VALIDATION: Furniture must be assigned through the In Use workflow.");
+  }
 
   // Re-check the balance inside the lock. The figure the browser showed may be
   // stale by the time it reaches here.
@@ -87,7 +98,11 @@ function processStockIssue(payload) {
  */
 function processStockReceive(payload) {
   var req = payload.data;
-  var locationId = req.locationId || getConfig("DefaultLocationID", "LOC-01");
+  var headOfficeLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
+  var locationId = req.locationId || headOfficeLocationId;
+  if (locationId !== headOfficeLocationId && appRole((getUser(payload.actor) || {}).Role) !== "Admin") {
+    throw new Error("FORBIDDEN: Goods receipts must enter Head Office stock.");
+  }
 
   if (!req.productId) throw new Error("VALIDATION: No product selected.");
 
@@ -188,6 +203,10 @@ function processStockReceive(payload) {
 function processPurchaseRequest(payload) {
   var req = payload.data;
   var newProductName = String(req.newProductName || "").trim();
+  var requestSource = String(req.source || "APP").trim().toUpperCase();
+  if (["APP", "WHATSAPP", "CALL"].indexOf(requestSource) === -1) {
+    throw new Error("VALIDATION: Request source must be App, WhatsApp or Call.");
+  }
 
   if (!String(req.requestedByUserId || "").trim()) {
     throw new Error("VALIDATION: Record who requested the product.");
@@ -245,7 +264,8 @@ function processPurchaseRequest(payload) {
     ApprovedBy: approvedBy,
     ApprovedAt: approvedBy ? new Date() : "",
     Actor: payload.actor,
-    Notes: req.notes || ""
+    Notes: req.notes || "",
+    Source: requestSource
   });
 
   audit(payload.actor, "purchase.request", requestId, {
@@ -254,7 +274,8 @@ function processPurchaseRequest(payload) {
     qty: qty,
     estValue: estValue,
     approvedBy: approvedBy,
-    status: status
+    status: status,
+    source: requestSource
   });
 
   return {
@@ -352,8 +373,8 @@ function processStockHandover(payload) {
   var product = getProduct(req.productId);
   if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
 
-  var fromLocationId = req.fromLocationId || "LOC-07"; // Receiving (Satvik)
-  var toLocationId = req.toLocationId || getConfig("DefaultLocationID", "LOC-01");
+  var fromLocationId = req.fromLocationId || getConfig("HeadOfficeLocationID", "LOC-01");
+  var toLocationId = req.toLocationId || getConfig("SalonFloorLocationID", "LOC-02");
 
   // Pending handovers reserve stock but do not move custody until Hitesh's
   // recount. This prevents the same Receiving stock being promised twice.
@@ -416,16 +437,24 @@ function processConfirmHandover(payload) {
   var qtyIdx = t.idx["Qty"];
   var confirmed = 0;
   var expectedQty = null;
+  var expectedReceiverId = "";
 
   for (var j = 0; j < values.length; j++) {
     if (String(values[j][handoverIdx]).trim() !== handoverId) continue;
     if (Number(values[j][directionIdx]) !== 1) continue;
     expectedQty = Number(values[j][qtyIdx]);
+    expectedReceiverId = String(values[j][t.idx["PersonID"]] || "").trim();
     break;
   }
 
   if (expectedQty === null || isNaN(expectedQty)) {
     throw new Error("NOT_FOUND: No pending handover " + handoverId + " to confirm.");
+  }
+
+  var actorUser = getUser(payload.actor);
+  var actorRole = appRole((actorUser || {}).Role);
+  if (actorRole !== "Admin" && expectedReceiverId && String(actorUser.UserID) !== expectedReceiverId) {
+    throw new Error("FORBIDDEN: Only the selected receiver can confirm this handover.");
   }
 
   var countedQty = Number(req.countedQty);
@@ -477,6 +506,196 @@ function processConfirmHandover(payload) {
   return { handoverId: handoverId, rowsConfirmed: confirmed };
 }
 
+// ---------------------------------------------------------- opening stock
+
+function openingLocationForActor(actor, requestedLocationId) {
+  var role = appRole((getUser(actor) || {}).Role);
+  if (role === "PurchaseCoordinator") return getConfig("HeadOfficeLocationID", "LOC-01");
+  if (role === "ProductDistributor") return getConfig("SalonFloorLocationID", "LOC-02");
+  if (role === "Admin" && requestedLocationId) return String(requestedLocationId);
+  throw new Error("FORBIDDEN: Your account cannot submit an opening stock count.");
+}
+
+/** Records one physical opening count. Approval is deliberately separate. */
+function processOpeningStockSubmit(payload) {
+  var req = payload.data || {};
+  var product = getProduct(req.productId);
+  if (!product) throw new Error("UNKNOWN_PRODUCT: Select a valid product.");
+
+  var qty = Number(req.qty);
+  if (isNaN(qty) || qty < 0) throw new Error("VALIDATION: Opening quantity cannot be negative.");
+  var locationId = openingLocationForActor(payload.actor, req.locationId);
+
+  var existing = readAll("OPENING_COUNTS").filter(function (row) {
+    return String(row.ProductID) === String(req.productId) &&
+      String(row.LocationID) === locationId &&
+      ["PENDING", "APPROVED"].indexOf(String(row.Status).toUpperCase()) !== -1;
+  });
+  if (existing.length) {
+    throw new Error("DUPLICATE: Opening stock for this product and location is already submitted.");
+  }
+
+  var countId = nextId("OPN");
+  appendRecord("OPENING_COUNTS", {
+    CountID: countId, Date: new Date(), ProductID: req.productId, Qty: qty,
+    LocationID: locationId, CountedBy: payload.actor, Status: "PENDING",
+    Notes: req.notes || ""
+  });
+  audit(payload.actor, "opening.submit", countId, { productId: req.productId, qty: qty, locationId: locationId });
+  return { countId: countId, status: "PENDING", locationId: locationId };
+}
+
+function listOpeningCounts(payload) {
+  var role = appRole((getUser(payload.actor) || {}).Role);
+  var rows = readAll("OPENING_COUNTS");
+  if (role !== "Admin") {
+    var locationId = openingLocationForActor(payload.actor, "");
+    rows = rows.filter(function (row) { return String(row.LocationID) === locationId; });
+  }
+  return rows.map(function (row) {
+    var product = getProduct(row.ProductID);
+    return {
+      countId: row.CountID, date: row.Date, productId: row.ProductID,
+      productName: product ? product.Name : row.ProductID, qty: Number(row.Qty) || 0,
+      uom: product ? product.IssueUOM : "", locationId: row.LocationID,
+      countedBy: row.CountedBy, status: row.Status, reviewedBy: row.ReviewedBy || "",
+      notes: row.Notes || ""
+    };
+  }).reverse();
+}
+
+/** Admin approval posts exactly one OPENING row into the ledger. */
+function processOpeningStockApprove(payload) {
+  if (appRole((getUser(payload.actor) || {}).Role) !== "Admin") {
+    throw new Error("FORBIDDEN: Only an administrator can approve opening stock.");
+  }
+  var req = payload.data || {};
+  var decision = String(req.decision || "").toUpperCase();
+  if (decision !== "APPROVE" && decision !== "REJECT") {
+    throw new Error("VALIDATION: Decision must be APPROVE or REJECT.");
+  }
+
+  var t = table("OPENING_COUNTS");
+  var values = t.sheet.getLastRow() < 2 ? [] :
+    t.sheet.getRange(2, 1, t.sheet.getLastRow() - 1, t.headers.length).getValues();
+  var rowIndex = -1;
+  var row = null;
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][t.idx.CountID]) !== String(req.countId)) continue;
+    if (String(values[i][t.idx.Status]).toUpperCase() !== "PENDING") {
+      throw new Error("VALIDATION: This opening count has already been decided.");
+    }
+    rowIndex = i + 2;
+    row = values[i];
+    break;
+  }
+  if (!row) throw new Error("NOT_FOUND: Opening count not found.");
+
+  var status = decision === "APPROVE" ? "APPROVED" : "REJECTED";
+  if (decision === "APPROVE") {
+    var product = getProduct(row[t.idx.ProductID]);
+    var alreadyPosted = readAll("LEDGER").some(function (ledgerRow) {
+      return String(ledgerRow.Type).toUpperCase() === "OPENING" &&
+        String(ledgerRow.HandoverID) === String(req.countId);
+    });
+    if (!alreadyPosted) {
+      appendRecord("LEDGER", {
+        TxnID: nextId("TXN"), Date: new Date(), Type: "OPENING", Direction: 1,
+        ProductID: row[t.idx.ProductID], Qty: Number(row[t.idx.Qty]) || 0,
+        UOM: product ? product.IssueUOM : "", QtyBase: Number(row[t.idx.Qty]) || 0,
+        LocationID: row[t.idx.LocationID], HandoverID: req.countId,
+        Actor: payload.actor, Status: "POSTED", Notes: "Opening count " + req.countId
+      });
+    }
+  }
+  t.sheet.getRange(rowIndex, t.idx.Status + 1).setValue(status);
+  t.sheet.getRange(rowIndex, t.idx.ReviewedBy + 1).setValue(payload.actor);
+  t.sheet.getRange(rowIndex, t.idx.ReviewedAt + 1).setValue(new Date());
+  audit(payload.actor, "opening." + decision.toLowerCase(), req.countId, { status: status });
+  return { countId: req.countId, status: status };
+}
+
+// ---------------------------------------------------------- assets in use
+
+function processAssetIssue(payload) {
+  var req = payload.data || {};
+  var product = getProduct(req.productId);
+  if (!product) throw new Error("UNKNOWN_PRODUCT: Select a valid product.");
+  if (String(product.ProductType).trim().toLowerCase() !== "furniture") {
+    throw new Error("VALIDATION: Only Furniture products use the In Use workflow.");
+  }
+  var qty = Number(req.qty);
+  if (!qty || qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
+  if (!String(req.assignedTo || "").trim()) throw new Error("VALIDATION: Record who or where will use the asset.");
+
+  var locationId = getConfig("HeadOfficeLocationID", "LOC-01");
+  var available = computeAvailableBalance(req.productId, locationId);
+  if (qty > available) throw new Error("INSUFFICIENT_STOCK: Only " + available + " available at Head Office.");
+
+  var assignmentId = nextId("AST");
+  appendRecord("LEDGER", {
+    TxnID: nextId("TXN"), Date: new Date(), Type: "ASSET_IN_USE", Direction: -1,
+    ProductID: req.productId, Qty: qty, UOM: product.IssueUOM, QtyBase: toBaseQty(product, qty, false),
+    LocationID: locationId, CategoryID: req.categoryId || "CAT-15",
+    PersonID: req.assignedTo, HandoverID: assignmentId, Actor: payload.actor,
+    Status: "IN_USE", Notes: req.notes || ""
+  });
+  audit(payload.actor, "asset.issue", assignmentId, { productId: req.productId, qty: qty, assignedTo: req.assignedTo });
+  return { assignmentId: assignmentId, status: "IN_USE", newBalance: available - qty };
+}
+
+function listAssetsInUse() {
+  return readAll("LEDGER").filter(function (row) {
+    return String(row.Type).toUpperCase() === "ASSET_IN_USE" && String(row.Status).toUpperCase() === "IN_USE";
+  }).map(function (row) {
+    var product = getProduct(row.ProductID);
+    return { assignmentId: row.HandoverID, productId: row.ProductID,
+      productName: product ? product.Name : row.ProductID, qty: Number(row.Qty) || 0,
+      uom: row.UOM, assignedTo: row.PersonID, date: row.Date, notes: row.Notes || "" };
+  }).reverse();
+}
+
+function processAssetStatus(payload) {
+  var req = payload.data || {};
+  var nextStatus = String(req.status || "").toUpperCase();
+  if (["RETURNED", "DAMAGED", "LOST", "DISPOSED"].indexOf(nextStatus) === -1) {
+    throw new Error("VALIDATION: Choose Returned, Damaged, Lost or Disposed.");
+  }
+  var t = table("LEDGER");
+  var values = t.sheet.getLastRow() < 2 ? [] : t.sheet.getRange(2, 1, t.sheet.getLastRow() - 1, t.headers.length).getValues();
+  var rowIndex = -1;
+  var source = null;
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][t.idx.HandoverID]) === String(req.assignmentId) &&
+        String(values[i][t.idx.Type]).toUpperCase() === "ASSET_IN_USE" &&
+        String(values[i][t.idx.Status]).toUpperCase() === "IN_USE") {
+      rowIndex = i + 2; source = values[i]; break;
+    }
+  }
+  if (!source) throw new Error("NOT_FOUND: Active asset assignment not found.");
+  if (nextStatus === "RETURNED") {
+    // Append the restoring movement only once. If a prior call wrote the
+    // ledger row but timed out before changing the source status, retrying is
+    // safe and will not add the stock twice.
+    var returnAlreadyPosted = readAll("LEDGER").some(function (row) {
+      return String(row.Type).toUpperCase() === "ASSET_RETURN" &&
+        String(row.HandoverID) === String(req.assignmentId);
+    });
+    if (!returnAlreadyPosted) {
+      appendRecord("LEDGER", {
+        TxnID: nextId("TXN"), Date: new Date(), Type: "ASSET_RETURN", Direction: 1,
+        ProductID: source[t.idx.ProductID], Qty: source[t.idx.Qty], UOM: source[t.idx.UOM],
+        QtyBase: source[t.idx.QtyBase], LocationID: source[t.idx.LocationID],
+        PersonID: source[t.idx.PersonID], HandoverID: req.assignmentId,
+        Actor: payload.actor, Status: "RETURNED", Notes: req.notes || ""
+      });
+    }
+  }
+  t.sheet.getRange(rowIndex, t.idx.Status + 1).setValue(nextStatus);
+  audit(payload.actor, "asset." + nextStatus.toLowerCase(), req.assignmentId, { status: nextStatus });
+  return { assignmentId: req.assignmentId, status: nextStatus };
+}
+
 /**
  * Everything the shared dashboard needs in one call: live stock split by
  * custody, pending handovers, open requests (catalogue and new-product
@@ -488,8 +707,8 @@ function processConfirmHandover(payload) {
  * first" is just "read from the end" -- no date parsing needed.
  */
 function getDashboard() {
-  var receivingLocationId = "LOC-07"; // Receiving (Satvik)
-  var custodyLocationId = getConfig("DefaultLocationID", "LOC-01"); // Hitesh's active stock
+  var receivingLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
+  var custodyLocationId = getConfig("SalonFloorLocationID", "LOC-02");
 
   var products = readAll("PRODUCTS").filter(function (p) {
     return isTruthy(p.Active);
@@ -525,6 +744,9 @@ function getDashboard() {
       receivingBalance: receiving,
       receivingAvailable: receiving - pendingOut,
       custodyBalance: custody,
+      headOfficeBalance: receiving,
+      headOfficeAvailable: receiving - pendingOut,
+      salonFloorBalance: custody,
       pendingHandover: pendingIn,
       totalBalance: receiving + custody,
       lowStock: custody <= reorderLevel
@@ -549,6 +771,7 @@ function getDashboard() {
         status: r.Status,
         estValue: r.EstValue,
         approvedBy: r.ApprovedBy,
+        source: r.Source || "APP",
         notes: r.Notes
       };
     })
@@ -606,7 +829,8 @@ function getDashboard() {
     pendingHandovers: listPendingHandovers(),
     openRequests: openRequests,
     recentActivity: recentActivity,
-    vendorRates: vendorRates
+    vendorRates: vendorRates,
+    assetsInUse: listAssetsInUse()
   };
 }
 
@@ -616,11 +840,16 @@ function getDashboard() {
  * Deliberately narrow -- this is not the general read-sync, just enough to
  * make the confirm screen usable before that lands.
  */
-function listPendingHandovers() {
+function listPendingHandovers(payload) {
   var rows = readAll("LEDGER").filter(function (r) {
     return r.Type === "HANDOVER" && Number(r.Direction) === 1 &&
       String(r.Status).trim() === "PENDING_CONFIRM";
   });
+
+  var actorUser = payload && getUser(payload.actor);
+  if (actorUser && appRole(actorUser.Role) === "ProductDistributor") {
+    rows = rows.filter(function (r) { return !r.PersonID || String(r.PersonID) === String(actorUser.UserID); });
+  }
 
   return rows.map(function (r) {
     var product = getProduct(r.ProductID);

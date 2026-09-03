@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Check, Loader2, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
@@ -10,10 +10,11 @@ import {
   MOCK_CATEGORIES,
   MOCK_USERS,
   DEFAULT_LOCATION_ID,
-  DEMO_STOCK_BALANCES,
+  SALON_FLOOR_LOCATION_ID,
   PRODUCT_TYPES,
   type ProductType,
 } from "@/lib/mock-data";
+import { OpeningStockPanel } from "@/components/workflow-panels";
 import { AppShell, PageContainer, PageHeader, ActionBar } from "@/components/app-shell";
 import {
   Field,
@@ -30,7 +31,7 @@ import { postAction } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 type Banner = { tone: "success" | "error"; title: string; text: string } | null;
-type StockOutTab = "issue" | "confirm" | "request";
+type StockOutTab = "issue" | "confirm" | "request" | "opening";
 
 // Sentinel for "the product I need isn't in the list yet." Never sent to the
 // backend as a productId — it switches the request form into free-text mode.
@@ -58,11 +59,6 @@ interface DashboardStockOnly {
 
 type BalanceSource = "demo" | "live";
 
-const INITIAL_DEMO_BALANCES = Object.fromEntries(
-  MOCK_PRODUCTS.map((product) => [product.id, DEMO_STOCK_BALANCES[product.id] ?? 0])
-);
-
-let demoIssueCounter = 0;
 let requestKeySeq = 0;
 
 // Hitesh has no purchasing authority, so his own request always names
@@ -73,39 +69,7 @@ const STOCK_OUT_TABS: { id: StockOutTab; label: string; hint: string }[] = [
   { id: "issue", label: "Issue Stock", hint: "To technicians" },
   { id: "confirm", label: "Confirm Handovers", hint: "From Satvik" },
   { id: "request", label: "Request Stock", hint: "Needs Satvik's approval" },
-];
-
-const DEMO_PENDING_HANDOVERS: PendingHandover[] = [
-  {
-    handoverId: "DEMO-HND-003",
-    productId: "PRD-0004",
-    productName: "Blue Tape",
-    qty: 20,
-    uom: "PCS",
-    date: "2026-09-01",
-    actor: "satvik@ahl.com",
-    notes: "Counted and handed over in person.",
-  },
-  {
-    handoverId: "DEMO-HND-001",
-    productId: "PRD-0005",
-    productName: "Scalp Protector Spray",
-    qty: 100,
-    uom: "ML",
-    date: "2026-09-01",
-    actor: "satvik@ahl.com",
-    notes: "Stock room handover for AHL services.",
-  },
-  {
-    handoverId: "DEMO-HND-002",
-    productId: "PRD-0028",
-    productName: "Kerastase Shampoo 250ml",
-    qty: 4,
-    uom: "BTL",
-    date: "2026-09-01",
-    actor: "satvik@ahl.com",
-    notes: "Retail stock for display and sale.",
-  },
+  { id: "opening", label: "Opening Stock", hint: "First-time count" },
 ];
 
 function ConfirmHandoversPanel({
@@ -117,7 +81,7 @@ function ConfirmHandoversPanel({
   setBusy: (v: boolean) => void;
   setBanner: (b: Banner) => void;
 }) {
-  const [pending, setPending] = useState<PendingHandover[] | null>(DEMO_PENDING_HANDOVERS);
+  const [pending, setPending] = useState<PendingHandover[] | null>(null);
   const [dataSource, setDataSource] = useState<BalanceSource>("demo");
   const [loading, setLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -137,14 +101,20 @@ function ConfirmHandoversPanel({
         text: "This queue now matches the Google Sheet ledger.",
       });
     } else {
+      setPending([]);
       setDataSource("demo");
       setBanner({
         tone: "error",
         title: "Live handovers unavailable",
-        text: "The sample confirmation queue is still active. No Google Sheet data will be changed.",
+        text: "Confirmation is disabled until the live ledger is available.",
       });
     }
   }, [setBanner]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(id);
+  }, [load]);
 
   const confirm = async (handoverId: string) => {
     setBanner(null);
@@ -166,19 +136,10 @@ function ConfirmHandoversPanel({
     if (dataSource === "demo") {
       setBusy(false);
       setConfirmingId(null);
-      if (Math.abs(countedQty - handover.qty) > 0.000001) {
-        setBanner({
-          tone: "error",
-          title: "Count mismatch",
-          text: `Satvik recorded ${handover.qty} ${handover.uom}, but you counted ${countedQty}. It remains pending for review.`,
-        });
-        return;
-      }
-      setPending((current) => (current ?? []).filter((item) => item.handoverId !== handoverId));
       setBanner({
-        tone: "success",
-        title: "Demo handover confirmed",
-        text: `${handoverId} was removed from Hitesh's sample queue. No Google Sheet data was changed.`,
+        tone: "error",
+        title: "Live ledger required",
+        text: "Refresh and reconnect before confirming stock.",
       });
       return;
     }
@@ -221,13 +182,6 @@ function ConfirmHandoversPanel({
           </button>
         }
       />
-      {dataSource === "demo" && (
-        <div className="border-b border-border px-5 py-3">
-          <StatusBanner tone="info" title="Demo confirmations">
-            Confirm any sample below to demonstrate Hitesh&apos;s recount workflow safely.
-          </StatusBanner>
-        </div>
-      )}
       {pending === null ? (
         <p className="px-5 py-6 text-sm text-muted-foreground">Loading…</p>
       ) : pending.length === 0 ? (
@@ -276,7 +230,7 @@ function ConfirmHandoversPanel({
                 <Button
                   size="sm"
                   onClick={() => void confirm(h.handoverId)}
-                  disabled={busy}
+                  disabled={busy || dataSource !== "live"}
                   className="h-9 shrink-0"
                 >
                   {confirmingId === h.handoverId ? (
@@ -370,6 +324,7 @@ function RequestPanel({
       requestedByUserId: HITESH_USER_ID,
       urgency: values.urgency,
       notes: values.notes,
+      source: "APP",
     });
 
     setBusy(false);
@@ -546,7 +501,7 @@ export default function StockOutPage() {
   // Start with clearly labelled local demo data so Hitesh can test the screen
   // even while Apps Script is unavailable. A successful refresh replaces this
   // object with the authoritative ledger balances.
-  const [balances, setBalances] = useState<Record<string, number>>(INITIAL_DEMO_BALANCES);
+  const [balances, setBalances] = useState<Record<string, number>>({});
   const [balanceSource, setBalanceSource] = useState<BalanceSource>("demo");
   const [balancesLoading, setBalancesLoading] = useState(false);
 
@@ -567,14 +522,20 @@ export default function StockOutPage() {
         text: "Balances now match Hitesh's custody ledger.",
       });
     } else {
+      setBalances({});
       setBalanceSource("demo");
       setBanner({
         tone: "error",
         title: "Live stock unavailable",
-        text: "Demo balances are still active. No Google Sheet data will be changed.",
+        text: "Stock issuing is disabled until the live ledger is available.",
       });
     }
   }, []);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => void loadBalances(), 0);
+    return () => window.clearTimeout(id);
+  }, [loadBalances]);
 
   const form = useForm<IssueStock>({
     resolver: zodResolver(IssueStockSchema),
@@ -618,19 +579,12 @@ export default function StockOutPage() {
     setPending(true);
 
     if (balanceSource === "demo") {
-      const issuedQty = data.splits.reduce((sum, split) => sum + split.qty, 0);
-      const nextBalance = Math.max(0, (balances[data.productId] ?? 0) - issuedQty);
-      demoIssueCounter += 1;
-
-      setBalances((current) => ({ ...current, [data.productId]: nextBalance }));
       setPending(false);
       setBanner({
-        tone: "success",
-        title: "Demo issue recorded",
-        text: `DEMO-${String(demoIssueCounter).padStart(3, "0")} complete — ${nextBalance} remaining. No Google Sheet data was changed.`,
+        tone: "error",
+        title: "Live ledger required",
+        text: "Refresh the stock balance before issuing anything.",
       });
-      form.reset();
-      setSelectedProduct(null);
       return;
     }
 
@@ -706,6 +660,8 @@ export default function StockOutPage() {
           </div>
         ) : stockOutTab === "request" ? (
           <RequestPanel busy={pending} setBusy={setPending} setBanner={setBanner} />
+        ) : stockOutTab === "opening" ? (
+          <div className="pb-8"><OpeningStockPanel locationId={SALON_FLOOR_LOCATION_ID} locationName="Salon Floor" /></div>
         ) : (
         <div className="grid gap-5 pb-8 lg:grid-cols-12">
           {/* Product picker */}
@@ -714,9 +670,7 @@ export default function StockOutPage() {
               <PanelHeader
                 title="Select product"
                 description={
-                  balanceSource === "demo"
-                    ? "Demo stock for Hitesh — available products are shown first."
-                    : "What's actually in your hands right now — available products first."
+                  "Salon Floor stock in Hitesh's custody — available products first."
                 }
                 aside={
                   <button
@@ -726,17 +680,10 @@ export default function StockOutPage() {
                     className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
                   >
                     <RefreshCw className={cn("size-3.5", balancesLoading && "animate-spin")} />
-                    {balanceSource === "demo" ? "Load live stock" : "Refresh"}
+                    {balanceSource === "demo" ? "Connect live stock" : "Refresh"}
                   </button>
                 }
               />
-              {balanceSource === "demo" && (
-                <div className="border-b border-border px-5 py-3">
-                  <StatusBanner tone="info" title="Demo data">
-                    Test issues update this screen only. The Google Sheet stays unchanged.
-                  </StatusBanner>
-                </div>
-              )}
               <ul className="divide-y divide-border">
                 {sortedProducts.map((p) => {
                   const active = selectedProduct === p.id;
@@ -1013,7 +960,7 @@ export default function StockOutPage() {
             <Button
               size="lg"
               onClick={() => void form.handleSubmit(onSubmit)()}
-              disabled={!selectedProduct || pending || overdrawn}
+              disabled={!selectedProduct || pending || overdrawn || balanceSource !== "live"}
               className="h-12 w-full text-[0.9375rem] font-semibold sm:w-auto sm:px-8"
             >
               {pending ? (

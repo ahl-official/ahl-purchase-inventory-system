@@ -26,6 +26,12 @@ export type AppsScriptAction =
   | "stock.handover"
   | "stock.confirmHandover"
   | "handover.list"
+  | "opening.submit"
+  | "opening.list"
+  | "opening.approve"
+  | "asset.issue"
+  | "asset.list"
+  | "asset.status"
   | "dashboard.read";
 
 export interface AppsScriptPayload<T = unknown> {

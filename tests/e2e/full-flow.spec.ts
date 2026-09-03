@@ -107,7 +107,7 @@ test("full purchase-to-issue flow, both roles", async ({ page }) => {
   await test.step("Fill every GRN field", async () => {
     await page.locator("#grn-product").selectOption(ALOE_VERA_GEL);
     await page.locator("#grn-qty").fill("50");
-    await expect(page.locator("#grn-location")).toHaveValue("LOC-07");
+    await expect(page.locator("#grn-location")).toHaveValue("LOC-01");
     await page.locator("#grn-vendor").selectOption(HAIRTECH_INDIA);
     await page.locator("#grn-category").selectOption(AHL_SERVICE);
     await page.locator("#grn-po").fill("PO-E2E-001");

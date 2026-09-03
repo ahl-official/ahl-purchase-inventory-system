@@ -28,7 +28,9 @@ import {
   MOCK_APPROVERS,
   PRODUCT_TYPES,
   type ProductType,
+  HEAD_OFFICE_LOCATION_ID,
 } from "@/lib/mock-data";
+import { HeadOfficeIssuePanel, OpeningStockPanel } from "@/components/workflow-panels";
 
 // Mirrors CONFIG.ApprovalThreshold on the backend (apps-script/Setup.gs
 // DEFAULT_CONFIG). Kept as a constant here rather than fetched, same stopgap
@@ -36,16 +38,15 @@ import {
 // approver before submitting; the backend is the one that actually enforces it.
 const APPROVAL_THRESHOLD = 5000;
 
-// Custody sits here the moment Satvik receives it, before it is handed to
-// Hitesh. Mirrors mock-data.ts MOCK_LOCATIONS "Receiving (Satvik)".
-const RECEIVING_LOCATION_ID = "LOC-07";
+// Purchases enter Satvik's Head Office stock before being handed to Hitesh.
+const RECEIVING_LOCATION_ID = HEAD_OFFICE_LOCATION_ID;
 const HITESH_USER_ID = "USR-006";
 
 // Sentinel for "the product I need isn't in the list yet." Never sent to the
 // backend as a productId — it switches the form into free-text mode instead.
 const NEW_PRODUCT_VALUE = "__NEW__";
 
-type Tab = "request" | "grn" | "handover";
+type Tab = "request" | "grn" | "handover" | "direct" | "opening";
 type Banner = { tone: "success" | "error"; title: string; text: string } | null;
 type DataSource = "demo" | "live";
 
@@ -57,6 +58,7 @@ interface RequestForm {
   qty: number;
   requestedByUserId: string;
   urgency: "Normal" | "Urgent";
+  source: "WHATSAPP" | "CALL";
   approvedBy: string;
   notes: string;
 }
@@ -103,70 +105,12 @@ interface PendingHandover {
 // List keys for optimistic rows. A plain counter rather than Date.now(): pure
 // from React's point of view, and immune to two submits inside one millisecond.
 let requestKeySeq = 0;
-let demoHandoverSeq = 2;
-
-const DEMO_REQUESTS: LoggedRequest[] = [
-  {
-    key: "demo-request-1",
-    requestId: "DEMO-REQ-101",
-    product: "Blue Tape",
-    qty: 20,
-    by: "Gauri",
-    state: "saved",
-  },
-  {
-    key: "demo-request-2",
-    requestId: "DEMO-REQ-102",
-    product: "Colour Tube 100ml",
-    qty: 600,
-    by: "Anita",
-    state: "saved",
-  },
-  {
-    key: "demo-request-3",
-    requestId: "DEMO-REQ-103",
-    product: "Kerastase Shampoo 250ml",
-    qty: 6,
-    by: "Daisy",
-    state: "saved",
-  },
-];
-
-const DEMO_RECEIVING_BALANCES: Record<string, number> = {
-  "PRD-0004": 40,
-  "PRD-0005": 250,
-  "PRD-0015": 500,
-  "PRD-0026": 600,
-  "PRD-0028": 6,
-};
-
-const DEMO_PENDING_HANDOVERS: PendingHandover[] = [
-  {
-    handoverId: "DEMO-HND-001",
-    productId: "PRD-0005",
-    productName: "Scalp Protector Spray",
-    qty: 100,
-    uom: "ML",
-    date: "2026-09-01",
-    actor: "satvik@ahl.com",
-    notes: "Counted and handed over at the stock room.",
-  },
-  {
-    handoverId: "DEMO-HND-002",
-    productId: "PRD-0028",
-    productName: "Kerastase Shampoo 250ml",
-    qty: 4,
-    uom: "BTL",
-    date: "2026-09-01",
-    actor: "satvik@ahl.com",
-    notes: "Retail stock for display and sale.",
-  },
-];
-
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: "request", label: "Log Request", hint: "From WhatsApp" },
   { id: "grn", label: "Receive Delivery", hint: "Goods receipt" },
   { id: "handover", label: "Handover", hint: "To Hitesh" },
+  { id: "direct", label: "Direct Issue", hint: "HO / In Use" },
+  { id: "opening", label: "Opening Stock", hint: "First-time count" },
 ];
 
 interface IncomingRequest {
@@ -177,6 +121,7 @@ interface IncomingRequest {
   requestedBy: string;
   estValue: number;
   status: string;
+  source?: "APP" | "WHATSAPP" | "CALL";
   notes?: string;
 }
 
@@ -281,6 +226,7 @@ function PendingApprovalsPanel({
                   </p>
                   <p className="truncate text-xs text-muted-foreground">
                     from {requester}
+                    {r.source ? ` · ${r.source === "APP" ? "App" : r.source === "WHATSAPP" ? "WhatsApp" : "Call"}` : ""}
                     {r.estValue ? ` · ~₹${Number(r.estValue).toLocaleString("en-IN")}` : ""}
                     {r.notes ? ` · ${r.notes}` : ""}
                   </p>
@@ -326,12 +272,13 @@ export default function PurchaseHub() {
       qty: 20,
       requestedByUserId: "USR-012",
       urgency: "Urgent",
+      source: "WHATSAPP",
       approvedBy: "",
       notes: "WhatsApp request — salon floor stock is running low.",
     },
   });
   const [requestPending, setRequestPending] = useState(false);
-  const [logged, setLogged] = useState<LoggedRequest[]>(DEMO_REQUESTS);
+  const [logged, setLogged] = useState<LoggedRequest[]>([]);
 
   const requestedTypeId = requestForm.watch("productTypeId");
   const requestedProductId = requestForm.watch("productId");
@@ -400,23 +347,12 @@ export default function PurchaseHub() {
 
     if (dataSource === "demo") {
       setRequestPending(false);
-      setLogged((prev) =>
-        prev.map((request) =>
-          request.key === key
-            ? {
-                ...request,
-                state: "saved" as const,
-                requestId: `DEMO-REQ-${104 + requestKeySeq}`,
-              }
-            : request
-        )
-      );
+      setLogged((prev) => prev.filter((request) => request.key !== key));
       setBanner({
-        tone: "success",
-        title: "Demo request logged",
-        text: "The sample request was added locally. No Google Sheet data was changed.",
+        tone: "error",
+        title: "Live ledger required",
+        text: "Reconnect to the live database before logging a request.",
       });
-      requestForm.reset();
       return;
     }
 
@@ -431,6 +367,7 @@ export default function PurchaseHub() {
         approvedBy: values.approvedBy || undefined,
         estimatedValue: estValue || undefined,
         notes: values.notes,
+        source: values.source,
       }
     );
 
@@ -493,19 +430,12 @@ export default function PurchaseHub() {
 
     setGrnPending(true);
     if (dataSource === "demo") {
-      const receivedQty = Number(values.qty);
-      setReceivingBalances((current) => ({
-        ...(current ?? {}),
-        [values.productId]: (current?.[values.productId] ?? 0) + receivedQty,
-      }));
       setGrnPending(false);
       setBanner({
-        tone: "success",
-        title: "Demo stock received",
-        text: `${receivedQty} units were added to Satvik's demo Receiving stock. No Google Sheet data was changed.`,
+        tone: "error",
+        title: "Live ledger required",
+        text: "Reconnect before recording a delivery.",
       });
-      setBillPhoto(null);
-      setProductPhoto(null);
       return;
     }
 
@@ -540,7 +470,7 @@ export default function PurchaseHub() {
       setBanner({
         tone: "success",
         title: "Stock received",
-        text: `${result.data?.txnId ?? "Transaction"} recorded, sitting in Receiving until handed to Hitesh.`,
+        text: `${result.data?.txnId ?? "Transaction"} recorded in Head Office stock.`,
       });
       grnForm.reset({
         productId: "",
@@ -570,9 +500,7 @@ export default function PurchaseHub() {
     },
   });
   const [handoverPending, setHandoverPending] = useState(false);
-  const [pendingHandovers, setPendingHandovers] = useState<PendingHandover[] | null>(
-    DEMO_PENDING_HANDOVERS
-  );
+  const [pendingHandovers, setPendingHandovers] = useState<PendingHandover[] | null>(null);
   const [pendingLoading, setPendingLoading] = useState(false);
 
   const loadPendingHandovers = useCallback(async () => {
@@ -585,9 +513,7 @@ export default function PurchaseHub() {
   // What's actually sitting in Receiving, live from the ledger -- so Satvik
   // can see what there is to hand over before he tries, not just find out
   // via an INSUFFICIENT_STOCK rejection after submitting.
-  const [receivingBalances, setReceivingBalances] = useState<Record<string, number> | null>(
-    DEMO_RECEIVING_BALANCES
-  );
+  const [receivingBalances, setReceivingBalances] = useState<Record<string, number> | null>(null);
   const loadReceivingBalances = useCallback(async () => {
     const result = await postAction<{
       stock: { productId: string; receivingBalance: number; receivingAvailable?: number }[];
@@ -604,18 +530,24 @@ export default function PurchaseHub() {
       setDataSource("live");
       setBanner({
         tone: "success",
-        title: "Live Receiving stock loaded",
-        text: "Satvik's handover form now uses the Google Sheet ledger.",
+        title: "Live Head Office stock loaded",
+        text: "Satvik's forms now use the Google Sheet ledger.",
       });
     } else {
       setDataSource("demo");
+      setReceivingBalances(null);
       setBanner({
         tone: "error",
         title: "Live data unavailable",
-        text: "Satvik's demo records are still active. No Google Sheet data will be changed.",
+        text: "Transactions are disabled until the live database reconnects.",
       });
     }
   }, []);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => { void loadReceivingBalances(); void loadPendingHandovers(); }, 0);
+    return () => window.clearTimeout(id);
+  }, [loadPendingHandovers, loadReceivingBalances]);
 
   const handoverProductId = handoverForm.watch("productId");
   const receivingBalanceForSelected =
@@ -626,45 +558,12 @@ export default function PurchaseHub() {
     setHandoverPending(true);
 
     if (dataSource === "demo") {
-      const available = receivingBalances?.[values.productId] ?? 0;
-      const qty = Number(values.qty);
-      if (qty > available) {
-        setHandoverPending(false);
-        setBanner({
-          tone: "error",
-          title: "Not enough demo stock",
-          text: `Only ${available} are sitting in Receiving.`,
-        });
-        return;
-      }
-
-      const product = MOCK_PRODUCTS.find((item) => item.id === values.productId);
-      demoHandoverSeq += 1;
-      const handoverId = `DEMO-HND-${String(demoHandoverSeq).padStart(3, "0")}`;
-      setReceivingBalances((current) => ({
-        ...(current ?? {}),
-        [values.productId]: Math.max(0, (current?.[values.productId] ?? 0) - qty),
-      }));
-      setPendingHandovers((current) => [
-        {
-          handoverId,
-          productId: values.productId,
-          productName: product?.name ?? values.productId,
-          qty,
-          uom: product?.uom ?? "UNIT",
-          date: "2026-09-01",
-          actor: "satvik@ahl.com",
-          notes: values.notes,
-        },
-        ...(current ?? []),
-      ]);
       setHandoverPending(false);
       setBanner({
-        tone: "success",
-        title: "Demo handover logged",
-        text: `${handoverId} is ready to explain as Hitesh's pending confirmation. No Google Sheet data was changed.`,
+        tone: "error",
+        title: "Live ledger required",
+        text: "Reconnect before handing over stock.",
       });
-      handoverForm.reset({ productId: "", qty: 1, toUserId: HITESH_USER_ID, notes: "" });
       return;
     }
 
@@ -706,9 +605,8 @@ export default function PurchaseHub() {
 
         {dataSource === "demo" && (
           <div className="mb-5">
-            <StatusBanner tone="info" title="Satvik demo data">
-              Sample requests, delivery details and Receiving stock are loaded locally. Demo
-              actions do not change Google Sheets.
+            <StatusBanner tone="error" title="Connecting to live database">
+              Transactions stay disabled until Head Office stock loads from Google Sheets.
             </StatusBanner>
           </div>
         )}
@@ -747,7 +645,11 @@ export default function PurchaseHub() {
           </div>
         )}
 
-        {tab === "request" ? (
+        {tab === "direct" ? (
+          <div className="mt-5 pb-8"><HeadOfficeIssuePanel /></div>
+        ) : tab === "opening" ? (
+          <div className="mt-5 pb-8"><OpeningStockPanel locationId={HEAD_OFFICE_LOCATION_ID} locationName="Head Office" /></div>
+        ) : tab === "request" ? (
           <div className="mt-5 space-y-5 pb-8">
             <PendingApprovalsPanel
               busy={requestPending}
@@ -895,6 +797,18 @@ export default function PurchaseHub() {
                     >
                       <option value="Normal">Normal</option>
                       <option value="Urgent">Urgent — stock is low or finished</option>
+                    </Select>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="req-source">Request received through</FieldLabel>
+                    <Select
+                      id="req-source"
+                      disabled={busy}
+                      {...requestForm.register("source")}
+                    >
+                      <option value="WHATSAPP">WhatsApp</option>
+                      <option value="CALL">Phone call</option>
                     </Select>
                   </Field>
                 </div>
@@ -1051,13 +965,13 @@ export default function PurchaseHub() {
                       aria-invalid={!!grnErrors.locationId}
                       {...grnForm.register("locationId", { required: "Pick a location" })}
                     >
-                      {MOCK_LOCATIONS.map((l) => (
+                      {MOCK_LOCATIONS.filter((l) => l.id === HEAD_OFFICE_LOCATION_ID).map((l) => (
                         <option key={l.id} value={l.id}>
                           {l.name}
                         </option>
                       ))}
                     </Select>
-                    <FieldHint>Defaults to Receiving — hand it to Hitesh next.</FieldHint>
+                    <FieldHint>All purchased stock enters Head Office first.</FieldHint>
                   </Field>
 
                   <Field>
@@ -1217,7 +1131,7 @@ export default function PurchaseHub() {
             <Panel>
               <PanelHeader
                 title="Hand over to Hitesh"
-                description="Stock leaves Receiving and moves into Hitesh's custody. He confirms it after his own recount."
+                description="Stock leaves Head Office and moves to Salon Floor only after Hitesh confirms his recount."
                 aside={
                   <button
                     type="button"
@@ -1225,7 +1139,7 @@ export default function PurchaseHub() {
                     className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
                   >
                     <RefreshCw className="size-3.5" />
-                    {dataSource === "demo" ? "Load live stock" : "Refresh"}
+                    {dataSource === "demo" ? "Connect live stock" : "Refresh"}
                   </button>
                 }
               />
@@ -1251,8 +1165,8 @@ export default function PurchaseHub() {
                   {handoverProductId && (
                     <FieldHint>
                       {receivingBalanceForSelected === null
-                        ? "Loading what's in Receiving…"
-                        : `${receivingBalanceForSelected} sitting in Receiving right now.`}
+                        ? "Loading Head Office stock…"
+                        : `${receivingBalanceForSelected} available at Head Office.`}
                     </FieldHint>
                   )}
                 </Field>
@@ -1313,7 +1227,7 @@ export default function PurchaseHub() {
                 <Button
                   size="lg"
                   onClick={() => void handoverForm.handleSubmit(onSubmitHandover)()}
-                  disabled={busy}
+                  disabled={busy || dataSource !== "live"}
                   className="h-12 w-full text-[0.9375rem] font-semibold"
                 >
                   {handoverPending ? (
@@ -1379,12 +1293,12 @@ export default function PurchaseHub() {
         )}
       </PageContainer>
 
-      <ActionBar>
+      {(tab === "request" || tab === "grn" || tab === "handover") && <ActionBar>
         {tab === "request" ? (
           <Button
             size="lg"
             onClick={() => void requestForm.handleSubmit(onSubmitRequest)()}
-            disabled={busy}
+            disabled={busy || dataSource !== "live"}
             className="h-12 w-full text-[0.9375rem] font-semibold"
           >
             {requestPending ? (
@@ -1408,7 +1322,7 @@ export default function PurchaseHub() {
             <Button
               size="lg"
               onClick={() => void grnForm.handleSubmit(onSubmitGrn)()}
-              disabled={busy || !billPhoto}
+              disabled={busy || !billPhoto || dataSource !== "live"}
               className="h-12 w-full text-[0.9375rem] font-semibold sm:w-auto sm:px-8"
             >
               {grnPending ? (
@@ -1429,7 +1343,7 @@ export default function PurchaseHub() {
             Use the button above the form to log a handover.
           </p>
         )}
-      </ActionBar>
+      </ActionBar>}
     </AppShell>
   );
 }

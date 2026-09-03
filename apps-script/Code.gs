@@ -80,7 +80,25 @@ function doPost(e) {
           result = processConfirmHandover(payload);
           break;
         case "handover.list":
-          result = listPendingHandovers();
+          result = listPendingHandovers(payload);
+          break;
+        case "opening.submit":
+          result = processOpeningStockSubmit(payload);
+          break;
+        case "opening.list":
+          result = listOpeningCounts(payload);
+          break;
+        case "opening.approve":
+          result = processOpeningStockApprove(payload);
+          break;
+        case "asset.issue":
+          result = processAssetIssue(payload);
+          break;
+        case "asset.list":
+          result = listAssetsInUse();
+          break;
+        case "asset.status":
+          result = processAssetStatus(payload);
           break;
         case "dashboard.read":
           result = getDashboard();

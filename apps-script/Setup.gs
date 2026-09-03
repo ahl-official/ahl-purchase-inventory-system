@@ -51,7 +51,11 @@ var SCHEMA = {
     // Set only when ProductID is blank -- the floor asked for something that
     // is not in PRODUCTS yet. Status is NEW_PRODUCT for these rows, distinct
     // from OPEN, so they can't be accidentally treated as ready to order.
-    "NewProductName"
+    "NewProductName", "Source"
+  ],
+  OPENING_COUNTS: [
+    "CountID", "Date", "ProductID", "Qty", "LocationID", "CountedBy",
+    "Status", "ReviewedBy", "ReviewedAt", "Notes"
   ],
   AUDIT: ["AuditID", "Timestamp", "Actor", "Action", "Ref", "Detail", "Result"],
   REPORT_CITY_TRANSFERS: [
@@ -77,7 +81,9 @@ var DEFAULT_CONFIG = [
   ["FYStart", "2026-04-01", "Financial year start"],
   ["FYEnd", "2027-03-31", "Financial year end"],
   ["AllowedEmailDomain", "americanhairline.com", "Login domain restriction"],
-  ["DefaultLocationID", "LOC-01", "Where stock is issued from by default"]
+  ["HeadOfficeLocationID", "LOC-01", "Satvik's Head Office stock"],
+  ["SalonFloorLocationID", "LOC-02", "Hitesh's Salon Floor stock"],
+  ["DefaultLocationID", "LOC-02", "Salon Floor stock issued by Hitesh"]
 ];
 
 function setupDatabase() {
@@ -91,6 +97,7 @@ function setupDatabase() {
     LISTS: "#5F6368",
     LEDGER: "#0F9D58",
     REQUESTS: "#F4B400",
+    OPENING_COUNTS: "#00897B",
     AUDIT: "#A142F4",
     REPORT_CITY_TRANSFERS: "#673AB7",
     REPORT_INVENTORY: "#3F51B5"
@@ -224,7 +231,8 @@ function migrateProducts(source, target) {
       r[h["DefaultVendorID"]],
       r[h["ReorderLevel"]] || 0,
       normaliseBool(r[h["Active"]]),
-      r[h["Notes"]] || ""
+      r[h["Notes"]] || "",
+      h["ProductType"] !== undefined ? r[h["ProductType"]] : "Consumable"
     ]);
   }
 
@@ -252,7 +260,8 @@ function migratePeople(source, target) {
       var existingRow = targetData[existingIndex];
       var existingCredentials = {
         hash: targetHeaders.PasswordHash === undefined ? "" : existingRow[targetHeaders.PasswordHash],
-        salt: targetHeaders.PasswordSalt === undefined ? "" : existingRow[targetHeaders.PasswordSalt]
+        salt: targetHeaders.PasswordSalt === undefined ? "" : existingRow[targetHeaders.PasswordSalt],
+        location: targetHeaders.LocationID === undefined ? "" : existingRow[targetHeaders.LocationID]
       };
       var existingId = String(existingRow[targetHeaders.UserID] || "").trim();
       var existingEmail = String(existingRow[targetHeaders.Email] || "").trim().toLowerCase();
@@ -276,14 +285,14 @@ function migratePeople(source, target) {
     var locations = String(r[h["AllowedLocations"]] || "").trim();
     var userId = String(r[h["UserID"]] || "").trim();
     var savedCredentials = existingPasswordsById[userId] ||
-      existingPasswordsByEmail[email.toLowerCase()] || { hash: "", salt: "" };
+      existingPasswordsByEmail[email.toLowerCase()] || { hash: "", salt: "", location: "" };
 
     rows.push([
       userId,
       email,
       name,
       r[h["Roles"]],
-      locations === "ALL" ? "ALL" : locations.split(",")[0] || "",
+      savedCredentials.location || (locations === "ALL" ? "ALL" : locations.split(",")[0] || ""),
       r[h["ApprovalLimit"]] || 0,
       normaliseBool(r[h["Active"]]),
       savedCredentials.hash,

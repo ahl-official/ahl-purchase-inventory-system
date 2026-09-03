@@ -67,7 +67,7 @@ sig  jP4Qyk1HuzvGNYRBND1Q5Rurj5xJlwc+Uff/vJfATKk=
 
 **Sheet: "AHL Flow DB"** — `16LFKuCYPOk46dWalYXHcoDYuqPf6mn213pfSp0ukEe4`
 
-Seven tabs, deliberately consolidated down from an earlier 21-table design that
+Ten operational tabs, deliberately consolidated down from an earlier 21-table design that
 modelled a system nobody has built. Schema is defined once in
 `apps-script/Setup.gs` under `SCHEMA`.
 
@@ -78,7 +78,8 @@ modelled a system nobody has built. Schema is defined once in
 | `USER` | UserID (login email), Password, Active — temporary simple login store |
 | `LISTS` | Type, Code, Name, Extra, Active — `Type` ∈ CATEGORY \| VENDOR \| LOCATION \| UOM |
 | `LEDGER` | TxnID, Date, Type, Direction, ProductID, Qty, UOM, QtyBase, LocationID, CategoryID, PersonID, VendorID, HandoverID, PORef, InvoiceNo, Amount, BillPhotoURL, Actor, Status, Notes |
-| `REQUESTS` | RequestID, Date, ProductID, Qty, RequestedBy, Urgency, EstValue, Status, ApprovedBy, ApprovedAt, Actor, Notes |
+| `REQUESTS` | RequestID, Date, ProductID, Qty, RequestedBy, Urgency, EstValue, Status, ApprovedBy, ApprovedAt, Actor, Notes, NewProductName, Source |
+| `OPENING_COUNTS` | CountID, Date, ProductID, Qty, LocationID, CountedBy, Status, ReviewedBy, ReviewedAt, Notes |
 | `CONFIG` | Key, Value, Notes |
 | `AUDIT` | AuditID, Timestamp, Actor, Action, Ref, Detail, Result |
 
@@ -128,16 +129,20 @@ modelled a system nobody has built. Schema is defined once in
   **Use these — do not hardcode `bg-slate-900` etc.** That drift is what made
   the earlier UI inconsistent.
 
-### Not built
+### Current production workflow
 
-- **Admin dashboard** (`/admin`) — three placeholder cards. Approvals queue,
-  three-way match, Category P&L are all unimplemented.
-- **Read sync.** All master data is a static mirror in `src/lib/mock-data.ts`.
-  Product `balance` is deliberately `null` — the ledger is empty, so there is no
-  real figure, and the UI says "Balance syncs from ledger" rather than inventing
-  one. **This is the highest-value next feature.**
-- **Two-sided handover.** `LEDGER.Status` is written as `PENDING_CONFIRM` on
-  issue, but nothing ever confirms it. Technicians are not users of the app.
+- `LOC-01` is Satvik's Head Office stock; `LOC-02` is Hitesh's Salon Floor stock.
+- Opening counts are submitted by each custodian and become ledger stock only after Admin approval.
+- Requests store `APP`, `WHATSAPP`, or `CALL` as their source.
+- Satvik receives purchases into Head Office, then hands them to Hitesh. Only the selected receiver can confirm.
+- Hitesh issues from Salon Floor. Satvik can issue Head Office consumables directly.
+- Furniture is assigned as `IN_USE` and can move to `RETURNED`, `DAMAGED`, `LOST`, or `DISPOSED`.
+- Production screens load live data automatically and do not execute fake demo transactions.
+
+### Still separate future scope
+
+- Three-way PO/bill/GRN payment matching and Category P&L remain management-reporting work.
+- Some form dropdown masters still mirror `src/lib/mock-data.ts`; stock balances and the direct-issue product list are live.
 
 ---
 

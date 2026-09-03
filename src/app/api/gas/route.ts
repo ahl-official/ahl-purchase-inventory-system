@@ -18,7 +18,7 @@ import { callAppsScript, type AppsScriptAction } from "@/lib/api";
 type SessionAction = Exclude<AppsScriptAction, "auth.login">;
 
 const ACTION_ROLES: Record<SessionAction, string[]> = {
-  "stock.issue": ["ProductDistributor", "Admin"],
+  "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the
   // Apps Script side is what actually forces his rows to PENDING_APPROVAL
@@ -28,6 +28,12 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "stock.handover": ["PurchaseCoordinator", "Admin"],
   "stock.confirmHandover": ["ProductDistributor", "Admin"],
   "handover.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "opening.submit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "opening.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "opening.approve": ["Admin"],
+  "asset.issue": ["PurchaseCoordinator", "Admin"],
+  "asset.list": ["PurchaseCoordinator", "Admin"],
+  "asset.status": ["PurchaseCoordinator", "Admin"],
   "dashboard.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 

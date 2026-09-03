@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Boxes, Clock3, Download, RefreshCw, Search } from "lucide-react";
 import { AppShell, PageContainer, PageHeader } from "@/components/app-shell";
 import { Panel, PanelHeader, Select, StatusBanner, TextInput } from "@/components/ui/field";
@@ -52,6 +52,7 @@ interface OpenRequestRow {
   status: string;
   estValue: number;
   approvedBy: string;
+  source?: "APP" | "WHATSAPP" | "CALL";
 }
 
 interface ActivityRow {
@@ -78,45 +79,22 @@ interface VendorRateRow {
   date: string;
 }
 
+interface AssetAssignmentRow {
+  assignmentId: string;
+  productName: string;
+  qty: number;
+  uom: string;
+  assignedTo: string;
+}
+
 interface DashboardData {
   stock: StockRow[];
   pendingHandovers: PendingHandoverRow[];
   openRequests: OpenRequestRow[];
   recentActivity: ActivityRow[];
   vendorRates: VendorRateRow[];
+  assetsInUse: AssetAssignmentRow[];
 }
-
-const DEMO_DASHBOARD: DashboardData = {
-  stock: [
-    { productId: "PRD-0004", name: "Blue Tape", categoryId: "CAT-02", productType: "Consumable", uom: "PCS", reorderLevel: 50, receivingBalance: 40, receivingAvailable: 20, custodyBalance: 120, pendingHandover: 20, totalBalance: 160, lowStock: false },
-    { productId: "PRD-0005", name: "Scalp Protector Spray", categoryId: "CAT-02", productType: "Consumable", uom: "ML", reorderLevel: 100, receivingBalance: 250, receivingAvailable: 150, custodyBalance: 450, pendingHandover: 100, totalBalance: 700, lowStock: false },
-    { productId: "PRD-0015", name: "Aloe Vera Gel", categoryId: "CAT-02", productType: "Consumable", uom: "GM", reorderLevel: 5, receivingBalance: 500, receivingAvailable: 500, custodyBalance: 500, pendingHandover: 0, totalBalance: 1000, lowStock: false },
-    { productId: "PRD-0026", name: "Colour Tube 100ml", categoryId: "CAT-09", productType: "Consumable", uom: "ML", reorderLevel: 50, receivingBalance: 600, receivingAvailable: 600, custodyBalance: 800, pendingHandover: 0, totalBalance: 1400, lowStock: false },
-    { productId: "PRD-0028", name: "Kerastase Shampoo 250ml", categoryId: "CAT-08", productType: "Retail", uom: "BTL", reorderLevel: 10, receivingBalance: 6, receivingAvailable: 2, custodyBalance: 14, pendingHandover: 4, totalBalance: 20, lowStock: false },
-    { productId: "PRD-0003", name: "Hair Topper - Standard", categoryId: "CAT-01", productType: "Retail", uom: "PCS", reorderLevel: 3, receivingBalance: 0, receivingAvailable: 0, custodyBalance: 2, pendingHandover: 0, totalBalance: 2, lowStock: true },
-  ],
-  pendingHandovers: [
-    { handoverId: "DEMO-HND-003", productName: "Blue Tape", qty: 20, uom: "PCS", date: "2026-09-01", actor: "Satvik", notes: "Counted in person." },
-    { handoverId: "DEMO-HND-001", productName: "Scalp Protector Spray", qty: 100, uom: "ML", date: "2026-09-01", actor: "Satvik" },
-  ],
-  openRequests: [
-    { requestId: "DEMO-REQ-101", date: "2026-09-01", productName: "Blue Tape", isNewProduct: false, qty: 20, requestedBy: "Gauri", status: "OPEN", estValue: 1700, approvedBy: "" },
-    { requestId: "DEMO-REQ-102", date: "2026-09-01", productName: "Colour Tube 100ml", isNewProduct: false, qty: 600, requestedBy: "Anita", status: "PENDING_APPROVAL", estValue: 6000, approvedBy: "Vishal Sir" },
-    { requestId: "DEMO-REQ-104", date: "2026-09-01", productName: "Silicone Scalp Base", isNewProduct: true, qty: 2, requestedBy: "Daisy", status: "NEW_PRODUCT", estValue: 9000, approvedBy: "Jagruti Mam" },
-  ],
-  recentActivity: [
-    { txnId: "DEMO-TXN-006", date: "2026-09-01", type: "ISSUE", direction: -1, productName: "Blue Tape", qty: 1, uom: "PCS", locationId: "LOC-01", categoryId: "CAT-02", personId: "USR-013", actor: "Hitesh", status: "ISSUED", notes: "Sonali — hair patch service" },
-    { txnId: "DEMO-TXN-005", date: "2026-09-01", type: "HANDOVER", direction: 1, productName: "Scalp Protector Spray", qty: 100, uom: "ML", locationId: "LOC-01", personId: "USR-006", actor: "Satvik", status: "PENDING_CONFIRM" },
-    { txnId: "DEMO-TXN-004", date: "2026-09-01", type: "RECEIPT", direction: 1, productName: "Aloe Vera Gel", qty: 500, uom: "GM", locationId: "LOC-07", categoryId: "CAT-02", actor: "Satvik", status: "RECEIVED" },
-    { txnId: "DEMO-TXN-003", date: "2026-08-31", type: "ISSUE", direction: -1, productName: "Colour Tube 100ml", qty: 40, uom: "ML", locationId: "LOC-01", categoryId: "CAT-09", personId: "USR-012", actor: "Hitesh", status: "ISSUED", notes: "Colour service" },
-  ],
-  vendorRates: [
-    { productId: "PRD-0004", productName: "Blue Tape", vendorId: "HairTech India", rate: 85, date: "2026-09-01" },
-    { productId: "PRD-0004", productName: "Blue Tape", vendorId: "Khimaj Hair", rate: 82.5, date: "2026-08-28" },
-    { productId: "PRD-0015", productName: "Aloe Vera Gel", vendorId: "HairTech India", rate: 25, date: "2026-09-01" },
-    { productId: "PRD-0028", productName: "Kerastase Shampoo 250ml", vendorId: "New Beauty Point", rate: 850, date: "2026-08-29" },
-  ],
-};
 
 function fmtDate(value: string) {
   const d = new Date(value);
@@ -141,7 +119,7 @@ function csvCell(value: unknown) {
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(DEMO_DASHBOARD);
+  const [data, setData] = useState<DashboardData | null>(null);
   const [dataSource, setDataSource] = useState<"demo" | "live">("demo");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ title: string; text: string } | null>(null);
@@ -158,11 +136,16 @@ export default function DashboardPage() {
       setData(result.data);
       setDataSource("live");
     } else {
-      setData(DEMO_DASHBOARD);
+      setData(null);
       setDataSource("demo");
       setError({ title: result.error, text: result.message });
     }
   }, []);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(id);
+  }, [load]);
 
   const stock = useMemo(() => {
     const query = stockQuery.trim().toLowerCase();
@@ -224,7 +207,7 @@ export default function DashboardPage() {
       <PageContainer>
         <PageHeader
           title="Dashboard"
-          description="What's in Receiving, what's with Hitesh, and what's still open — the one screen both of you read from."
+          description="Head Office stock, Salon Floor stock and pending work from one live ledger."
           actions={
             <>
             <button
@@ -243,19 +226,11 @@ export default function DashboardPage() {
               className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-              {dataSource === "demo" ? "Load live data" : "Refresh"}
+              {dataSource === "demo" ? "Connect live data" : "Refresh"}
             </button>
             </>
           }
         />
-
-        {dataSource === "demo" && (
-          <div className="mb-5">
-            <StatusBanner tone="info" title="Demo dashboard">
-              Sample stock, requests, handovers, activity and vendor rates are shown for the presentation.
-            </StatusBanner>
-          </div>
-        )}
 
         {error && (
           <div className="mb-5">
@@ -266,13 +241,21 @@ export default function DashboardPage() {
         )}
 
         <div className="space-y-5 pb-10">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                 <Boxes className="size-4 text-brand" /> Available products
               </div>
               <p className="mt-2 text-2xl font-semibold tabular text-foreground">
                 {availableProductCount}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <Boxes className="size-4 text-brand" /> Assets In Use
+              </div>
+              <p className="mt-2 text-2xl font-semibold tabular text-foreground">
+                {data?.assetsInUse?.length ?? 0}
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
@@ -296,7 +279,7 @@ export default function DashboardPage() {
           <Panel>
             <PanelHeader
               title="Stock on hand"
-              description="Receiving and Hitesh show usable stock. Pending stays locked until Hitesh confirms his recount."
+              description="Head Office and Salon Floor show usable stock. Pending remains locked until Hitesh confirms."
               aside={
                 lowStockCount > 0 ? (
                   <span className="flex items-center gap-1.5 text-xs font-medium text-warning">
@@ -337,9 +320,9 @@ export default function DashboardPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Product</TableHead>
-                    <TableHead className="text-right">In Receiving</TableHead>
+                    <TableHead className="text-right">Head Office</TableHead>
                     <TableHead className="text-right">Pending</TableHead>
-                    <TableHead className="text-right">With Hitesh</TableHead>
+                    <TableHead className="text-right">Salon Floor</TableHead>
                     <TableHead className="text-right">Total</TableHead>
                     <TableHead></TableHead>
                   </TableRow>
@@ -440,6 +423,7 @@ export default function DashboardPage() {
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {fmtDate(r.date)}
+                        {r.source && <> · {r.source === "APP" ? "App" : r.source === "WHATSAPP" ? "WhatsApp" : "Call"}</>}
                         {r.approvedBy && <> · approved by {r.approvedBy}</>}
                       </p>
                     </li>
