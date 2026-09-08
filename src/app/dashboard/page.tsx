@@ -311,8 +311,10 @@ export default function DashboardPage() {
                 ))}
               </Select>
             </div>
-            {!data && loading ? (
-              <p className="px-5 py-6 text-sm text-muted-foreground">Loading…</p>
+            {!data ? (
+              <p className="px-5 py-6 text-sm text-muted-foreground">
+                {loading ? "Loading…" : "—"}
+              </p>
             ) : stock.length === 0 ? (
               <p className="px-5 py-6 text-sm text-muted-foreground">No active products found.</p>
             ) : (

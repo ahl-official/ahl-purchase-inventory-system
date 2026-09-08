@@ -119,9 +119,12 @@ function ConfirmHandoversPanel({
   const confirm = async (handoverId: string) => {
     setBanner(null);
     const handover = pending?.find((item) => item.handoverId === handoverId);
-    const countedQty = Number(countedById[handoverId] ?? handover?.qty ?? 0);
+    const countedInput = countedById[handoverId];
+    const countedQty = Number(countedInput ?? 0);
 
-    if (!handover || countedQty <= 0) {
+    // The count field starts empty on purpose -- this is a recount, not a
+    // rubber stamp, so it must never silently fall back to the expected qty.
+    if (!handover || !countedInput || countedQty <= 0) {
       setBanner({
         tone: "error",
         title: "Enter your count",
@@ -210,7 +213,8 @@ function ConfirmHandoversPanel({
                   min={0.01}
                   step={h.uom === "PCS" || h.uom === "BTL" || h.uom === "ROLL" ? 1 : 0.01}
                   inputMode="decimal"
-                  value={countedById[h.handoverId] ?? String(h.qty)}
+                  placeholder={`${h.qty} expected`}
+                  value={countedById[h.handoverId] ?? ""}
                   onChange={(e) =>
                     setCountedById((prev) => ({ ...prev, [h.handoverId]: e.target.value }))
                   }
@@ -693,6 +697,7 @@ export default function StockOutPage() {
                     <li key={p.id}>
                       <button
                         type="button"
+                        disabled={pending}
                         onClick={() => {
                           setSelectedProduct(p.id);
                           form.setValue("productId", p.id, { shouldValidate: true });
@@ -707,7 +712,7 @@ export default function StockOutPage() {
                         }}
                         aria-pressed={active}
                         className={cn(
-                          "flex w-full items-center gap-3 px-5 py-3.5 text-left transition-colors",
+                          "flex w-full items-center gap-3 px-5 py-3.5 text-left transition-colors disabled:pointer-events-none disabled:opacity-50",
                           active ? "bg-brand-subtle" : "hover:bg-muted"
                         )}
                       >
@@ -789,9 +794,10 @@ export default function StockOutPage() {
                         {fields.length > 1 && (
                           <button
                             type="button"
+                            disabled={pending}
                             onClick={() => remove(index)}
                             aria-label={`Remove split ${index + 1}`}
-                            className="absolute top-3 right-3 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-danger-subtle hover:text-danger"
+                            className="absolute top-3 right-3 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-danger-subtle hover:text-danger disabled:pointer-events-none disabled:opacity-50"
                           >
                             <Trash2 className="size-3.5" />
                           </button>
@@ -826,6 +832,7 @@ export default function StockOutPage() {
                                 }
                                 inputMode="decimal"
                                 className="w-28 text-center font-semibold"
+                                disabled={pending}
                                 aria-invalid={!!errors?.qty}
                                 {...form.register(`splits.${index}.qty`, {
                                   valueAsNumber: true,
@@ -847,6 +854,7 @@ export default function StockOutPage() {
                                   <button
                                     type="button"
                                     key={cat.id}
+                                    disabled={pending}
                                     onClick={() =>
                                       form.setValue(
                                         `splits.${index}.categoryId`,
@@ -856,7 +864,7 @@ export default function StockOutPage() {
                                     }
                                     aria-pressed={on}
                                     className={cn(
-                                      "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[0.8125rem] font-medium transition-colors",
+                                      "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[0.8125rem] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
                                       on
                                         ? "border-brand bg-brand text-brand-foreground"
                                         : "border-border bg-card text-muted-foreground hover:border-input hover:text-foreground"
@@ -881,6 +889,7 @@ export default function StockOutPage() {
                             <FieldLabel htmlFor={`to-${index}`}>Issued to</FieldLabel>
                             <Select
                               id={`to-${index}`}
+                              disabled={pending}
                               aria-invalid={!!errors?.recipientUserId}
                               {...form.register(`splits.${index}.recipientUserId`)}
                             >
@@ -913,6 +922,7 @@ export default function StockOutPage() {
                   <Button
                     type="button"
                     variant="outline"
+                    disabled={pending}
                     onClick={() =>
                       append({
                         qty: 1,

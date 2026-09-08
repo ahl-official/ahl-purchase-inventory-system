@@ -109,7 +109,7 @@ const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: "request", label: "Log Request", hint: "From WhatsApp" },
   { id: "grn", label: "Receive Delivery", hint: "Goods receipt" },
   { id: "handover", label: "Handover", hint: "To Hitesh" },
-  { id: "direct", label: "Direct Issue", hint: "HO / In Use" },
+  { id: "direct", label: "Issue to Technician", hint: "Direct from Head Office" },
   { id: "opening", label: "Opening Stock", hint: "First-time count" },
 ];
 
@@ -135,10 +135,12 @@ function PendingApprovalsPanel({
   busy,
   setBusy,
   setBanner,
+  dataSource,
 }: {
   busy: boolean;
   setBusy: (v: boolean) => void;
   setBanner: (b: Banner) => void;
+  dataSource: DataSource;
 }) {
   const [items, setItems] = useState<IncomingRequest[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -166,6 +168,16 @@ function PendingApprovalsPanel({
 
   const decide = async (requestId: string, decision: "APPROVE" | "REJECT") => {
     setBanner(null);
+
+    if (dataSource === "demo") {
+      setBanner({
+        tone: "error",
+        title: "Live ledger required",
+        text: "Reconnect to the live database before approving or rejecting a request.",
+      });
+      return;
+    }
+
     setDecidingId(requestId);
     setBusy(true);
     const result = await postAction<{ status?: string }>("purchase.approve", {
@@ -236,14 +248,14 @@ function PendingApprovalsPanel({
                     size="sm"
                     variant="destructive"
                     onClick={() => void decide(r.requestId, "REJECT")}
-                    disabled={busy}
+                    disabled={busy || dataSource !== "live"}
                   >
                     {deciding ? <Loader2 className="size-3.5 animate-spin" /> : "Reject"}
                   </Button>
                   <Button
                     size="sm"
                     onClick={() => void decide(r.requestId, "APPROVE")}
-                    disabled={busy}
+                    disabled={busy || dataSource !== "live"}
                   >
                     {deciding ? <Loader2 className="size-3.5 animate-spin" /> : "Approve"}
                   </Button>
@@ -299,7 +311,13 @@ export default function PurchaseHub() {
     : isNewProduct
       ? (Number(requestedQty) || 0) * (Number(requestedEstimatedCost) || 0)
       : 0;
-  const needsApproval = estValue >= APPROVAL_THRESHOLD;
+  // A new product with no cost entered yet has an unknown value, not a zero
+  // one -- don't let leaving the (optional) cost blank quietly skip the
+  // approval requirement for something that could be well over the threshold.
+  const needsApproval =
+    isNewProduct && !requestedEstimatedCost
+      ? true
+      : estValue >= APPROVAL_THRESHOLD;
 
   const onSubmitRequest = async (values: RequestForm) => {
     setBanner(null);
@@ -391,7 +409,21 @@ export default function PurchaseHub() {
               ? `Recorded as approved by ${result.data.approvedBy}.`
               : "Added to the purchase queue.",
       });
-      requestForm.reset();
+      // Reset to blank, not back to the sample-filled defaults -- refilling
+      // the same product/qty/requester after a successful submit made it too
+      // easy to log the same request twice by mistake.
+      requestForm.reset({
+        productTypeId: "",
+        productId: "",
+        newProductName: "",
+        estimatedCost: "",
+        qty: 1,
+        requestedByUserId: "",
+        urgency: "Normal",
+        source: "WHATSAPP",
+        approvedBy: "",
+        notes: "",
+      });
     } else {
       // Roll back so the list never shows a write that did not land.
       setLogged((prev) => prev.filter((r) => r.key !== key));
@@ -655,6 +687,7 @@ export default function PurchaseHub() {
               busy={requestPending}
               setBusy={setRequestPending}
               setBanner={setBanner}
+              dataSource={dataSource}
             />
             <Panel>
               <PanelHeader
@@ -833,8 +866,9 @@ export default function PurchaseHub() {
                     </Select>
                     <FieldError>{requestErrors.approvedBy?.message}</FieldError>
                     <FieldHint>
-                      Roughly ₹{estValue.toLocaleString("en-IN")} — over ₹5,000, so record who
-                      already said yes.
+                      {isNewProduct && !requestedEstimatedCost
+                        ? "No cost estimate yet for this new product, so this needs sign-off just in case — record who already said yes."
+                        : `Roughly ₹${estValue.toLocaleString("en-IN")} — over ₹5,000, so record who already said yes.`}
                     </FieldHint>
                   </Field>
                 )}
@@ -975,7 +1009,7 @@ export default function PurchaseHub() {
                   </Field>
 
                   <Field>
-                    <FieldLabel step={4} htmlFor="grn-vendor">
+                    <FieldLabel step={4} htmlFor="grn-vendor" optional>
                       Vendor
                     </FieldLabel>
                     <Select id="grn-vendor" disabled={busy} {...grnForm.register("vendorId")}>
@@ -1273,8 +1307,9 @@ export default function PurchaseHub() {
                     <li key={h.handoverId} className="px-5 py-3.5">
                       <div className="flex items-center justify-between gap-3">
                         <p className="truncate text-sm text-foreground">
-                          <span className="font-medium tabular">{h.qty}</span>
-                          <span className="mx-1.5 text-muted-foreground">{h.uom}</span>·{" "}
+                          <span className="font-medium tabular">{h.qty}</span>{" "}
+                          {h.uom}
+                          <span className="mx-1.5 text-muted-foreground">·</span>
                           {h.productName}
                         </p>
                         <span className="id-text shrink-0 text-xs text-muted-foreground">

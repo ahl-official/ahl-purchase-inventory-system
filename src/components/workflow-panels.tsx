@@ -163,7 +163,7 @@ export function HeadOfficeIssuePanel() {
   const [productId, setProductId] = useState("");
   const [qty, setQty] = useState("1");
   const [recipient, setRecipient] = useState("");
-  const [categoryId, setCategoryId] = useState("CAT-15");
+  const [categoryId, setCategoryId] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
@@ -173,14 +173,20 @@ export function HeadOfficeIssuePanel() {
   const loadAssets = useCallback(async () => { const r = await postAction<AssetAssignment[]>("asset.list", {}); if (r.ok) setAssets(r.data ?? []); }, []);
   useEffect(() => { const id = window.setTimeout(() => void loadAssets(), 0); return () => window.clearTimeout(id); }, [loadAssets]);
 
+  const isFurniture = product?.productType.toLowerCase() === "furniture";
+  const recipients = MOCK_USERS.filter((user) =>
+    isFurniture ? user.role !== "Approver" : user.role === "Floor"
+  );
+
   const submit = async () => {
-    if (!product || !recipient || Number(qty) <= 0) { setBanner({ tone: "error", title: "Complete the issue", text: "Select product, recipient and quantity." }); return; }
+    if (!product || !recipient || !categoryId || Number(qty) <= 0) { setBanner({ tone: "error", title: "Complete the issue", text: "Select product, technician, service category and quantity." }); return; }
+    if (Number(qty) > (product.headOfficeAvailable ?? 0)) { setBanner({ tone: "error", title: "Not enough Head Office stock", text: `Only ${product.headOfficeAvailable ?? 0} ${product.uom} is currently available.` }); return; }
     setBusy(true);
-    const result = product.productType.toLowerCase() === "furniture"
+    const result = isFurniture
       ? await postAction<{ assignmentId: string }>("asset.issue", { productId, qty: Number(qty), assignedTo: recipient, categoryId, notes })
       : await postAction<{ handoverId: string }>("stock.issue", { productId, fromLocationId: HEAD_OFFICE_LOCATION_ID, splits: [{ qty: Number(qty), recipientUserId: recipient, categoryId, notes }] });
     setBusy(false);
-    if (result.ok) { setBanner({ tone: "success", title: product.productType === "Furniture" ? "Asset marked In Use" : "Head Office stock issued", text: "The live ledger and available balance were updated." }); setProductId(""); setQty("1"); setRecipient(""); setNotes(""); void load(); void loadAssets(); }
+    if (result.ok) { setBanner({ tone: "success", title: isFurniture ? "Asset marked In Use" : "Issued directly to technician", text: "Head Office stock, technician ownership and service category were updated in the live ledger." }); setProductId(""); setQty("1"); setRecipient(""); setCategoryId(""); setNotes(""); void load(); void loadAssets(); }
     else setBanner({ tone: "error", title: result.error, text: result.message });
   };
   const updateAsset = async (assignmentId: string, status: string) => {
@@ -192,14 +198,14 @@ export function HeadOfficeIssuePanel() {
   return <div className="space-y-4">
     {banner && <StatusBanner tone={banner.tone} title={banner.title}>{banner.text}</StatusBanner>}
     {error && <StatusBanner tone="error" title="Live data unavailable">{error}</StatusBanner>}
-    <Panel><PanelHeader title="Issue from Head Office" description="Consumables are consumed; Furniture is tracked as In Use." />
+    <Panel><PanelHeader title="Issue directly from Head Office" description="Satvik can give stock straight to a technician. This bypasses Hitesh and does not change Salon Floor stock." />
       <div className="grid gap-4 p-5 sm:grid-cols-2">
-        <Field><FieldLabel>Product</FieldLabel><Select value={productId} onChange={(e) => setProductId(e.target.value)} disabled={loading || busy}><option value="">Select product</option>{products.map((p) => <option key={p.productId} value={p.productId}>{p.name} · {p.productType} · {p.headOfficeAvailable ?? 0} available</option>)}</Select></Field>
+        <Field><FieldLabel>Product</FieldLabel><Select value={productId} onChange={(e) => { setProductId(e.target.value); setRecipient(""); setCategoryId(""); }} disabled={loading || busy}><option value="">Select product</option>{products.map((p) => <option key={p.productId} value={p.productId}>{p.name} · {p.productType} · {p.headOfficeAvailable ?? 0} available</option>)}</Select></Field>
         <Field><FieldLabel>Quantity</FieldLabel><TextInput type="number" min="0.01" step="0.01" value={qty} onChange={(e) => setQty(e.target.value)} disabled={busy} /></Field>
-        <Field><FieldLabel>Employee / user</FieldLabel><Select value={recipient} onChange={(e) => setRecipient(e.target.value)} disabled={busy}><option value="">Select recipient</option>{MOCK_USERS.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select></Field>
-        <Field><FieldLabel>Purpose / category</FieldLabel><Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} disabled={busy}>{MOCK_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
-        <Field className="sm:col-span-2"><FieldLabel>Note</FieldLabel><TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Back office use, room or purpose" disabled={busy} /></Field>
-        <Button onClick={() => void submit()} disabled={busy || loading} className="sm:w-fit">{busy && <Loader2 className="size-4 animate-spin" />}{product?.productType === "Furniture" ? "Mark In Use" : "Issue stock"}</Button>
+        <Field><FieldLabel>{isFurniture ? "Assigned employee" : "Technician"}</FieldLabel><Select value={recipient} onChange={(e) => setRecipient(e.target.value)} disabled={busy || !product}><option value="">{isFurniture ? "Select employee" : "Select technician"}</option>{recipients.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select></Field>
+        <Field><FieldLabel>Service / category</FieldLabel><Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} disabled={busy || !product}><option value="">Select where it will be used</option>{MOCK_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field className="sm:col-span-2"><FieldLabel>Note</FieldLabel><TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Reason, client, room or purpose" disabled={busy} /></Field>
+        <Button onClick={() => void submit()} disabled={busy || loading} className="sm:w-fit">{busy && <Loader2 className="size-4 animate-spin" />}{isFurniture ? "Mark In Use" : "Issue stock"}</Button>
       </div>
     </Panel>
     <Panel><PanelHeader title="Furniture currently In Use" description="Return it to Head Office or close it as damaged, lost or disposed." />

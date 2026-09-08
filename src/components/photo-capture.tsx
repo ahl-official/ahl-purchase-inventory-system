@@ -130,7 +130,10 @@ export function PhotoCapture({
       });
     } catch (err) {
       stopStream();
-      setMode("idle");
+      // Fall back to the captured photo if there was one (e.g. a failed
+      // "Retake") rather than idle — losing the preview here would make it
+      // look like the photo was discarded when it is actually still attached.
+      setMode((current) => (current === "captured" ? current : "idle"));
       const name = err instanceof Error ? err.name : "";
       setError(
         name === "NotAllowedError"
