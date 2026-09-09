@@ -48,7 +48,7 @@ const NEW_PRODUCT_VALUE = "__NEW__";
 
 type Tab = "request" | "grn" | "handover" | "direct" | "opening";
 type Banner = { tone: "success" | "error"; title: string; text: string } | null;
-type DataSource = "demo" | "live";
+type DataSource = "loading" | "error" | "live";
 
 interface RequestForm {
   productTypeId: ProductType | "";
@@ -169,7 +169,7 @@ function PendingApprovalsPanel({
   const decide = async (requestId: string, decision: "APPROVE" | "REJECT") => {
     setBanner(null);
 
-    if (dataSource === "demo") {
+    if (dataSource !== "live") {
       setBanner({
         tone: "error",
         title: "Live ledger required",
@@ -272,7 +272,7 @@ function PendingApprovalsPanel({
 export default function PurchaseHub() {
   const [tab, setTab] = useState<Tab>("request");
   const [banner, setBanner] = useState<Banner>(null);
-  const [dataSource, setDataSource] = useState<DataSource>("demo");
+  const [dataSource, setDataSource] = useState<DataSource>("loading");
 
   // ------------------------------------------------------------ log request
   const requestForm = useForm<RequestForm>({
@@ -363,7 +363,7 @@ export default function PurchaseHub() {
       ].slice(0, 6)
     );
 
-    if (dataSource === "demo") {
+    if (dataSource !== "live") {
       setRequestPending(false);
       setLogged((prev) => prev.filter((request) => request.key !== key));
       setBanner({
@@ -461,7 +461,7 @@ export default function PurchaseHub() {
     }
 
     setGrnPending(true);
-    if (dataSource === "demo") {
+    if (dataSource !== "live") {
       setGrnPending(false);
       setBanner({
         tone: "error",
@@ -546,7 +546,8 @@ export default function PurchaseHub() {
   // can see what there is to hand over before he tries, not just find out
   // via an INSUFFICIENT_STOCK rejection after submitting.
   const [receivingBalances, setReceivingBalances] = useState<Record<string, number> | null>(null);
-  const loadReceivingBalances = useCallback(async () => {
+  const loadReceivingBalances = useCallback(async (showStatus = false) => {
+    setDataSource("loading");
     const result = await postAction<{
       stock: { productId: string; receivingBalance: number; receivingAvailable?: number }[];
     }>(
@@ -560,13 +561,15 @@ export default function PurchaseHub() {
       });
       setReceivingBalances(next);
       setDataSource("live");
-      setBanner({
-        tone: "success",
-        title: "Live Head Office stock loaded",
-        text: "Satvik's forms now use the Google Sheet ledger.",
-      });
+      if (showStatus) {
+        setBanner({
+          tone: "success",
+          title: "Head Office stock refreshed",
+          text: "The latest balances were loaded from Google Sheets.",
+        });
+      }
     } else {
-      setDataSource("demo");
+      setDataSource("error");
       setReceivingBalances(null);
       setBanner({
         tone: "error",
@@ -589,7 +592,7 @@ export default function PurchaseHub() {
     setBanner(null);
     setHandoverPending(true);
 
-    if (dataSource === "demo") {
+    if (dataSource !== "live") {
       setHandoverPending(false);
       setBanner({
         tone: "error",
@@ -633,20 +636,31 @@ export default function PurchaseHub() {
         <PageHeader
           title="Purchase Hub"
           description="Log what the floor asks for, record deliveries, and hand stock over to Hitesh."
+          actions={
+            <span
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium",
+                dataSource === "live"
+                  ? "border-success/25 bg-success-subtle text-success"
+                  : dataSource === "error"
+                    ? "border-danger/25 bg-danger-subtle text-danger"
+                    : "border-border bg-card text-muted-foreground"
+              )}
+            >
+              {dataSource === "loading" ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <span className="size-2 rounded-full bg-current" />
+              )}
+              {dataSource === "live" ? "Live data" : dataSource === "error" ? "Offline" : "Syncing data"}
+            </span>
+          }
         />
 
-        {dataSource === "demo" && (
-          <div className="mb-5">
-            <StatusBanner tone="error" title="Connecting to live database">
-              Transactions stay disabled until Head Office stock loads from Google Sheets.
-            </StatusBanner>
-          </div>
-        )}
-
-        {/* Segmented control. Three moments of one job, not three destinations. */}
+        {/* Each action gets its own clear target; labels no longer fight for one line. */}
         <div
           role="tablist"
-          className="inline-flex w-full rounded-lg border border-border bg-muted p-1 sm:w-auto"
+          className="grid w-full grid-cols-2 gap-2 rounded-xl border border-border bg-muted/70 p-2 md:grid-cols-3 xl:grid-cols-5"
         >
           {TABS.map((t) => (
             <button
@@ -655,14 +669,16 @@ export default function PurchaseHub() {
               aria-selected={tab === t.id}
               onClick={() => setTab(t.id)}
               className={cn(
-                "flex-1 rounded-md px-4 py-2 text-sm font-medium transition-all sm:flex-none",
+                "min-w-0 rounded-lg border px-3 py-2.5 text-left transition-all",
                 tab === t.id
-                  ? "bg-card text-foreground shadow-[0_1px_2px_0_rgb(0_0_0/0.06)]"
-                  : "text-muted-foreground hover:text-foreground"
+                  ? "border-brand-border bg-card text-foreground shadow-[0_2px_8px_0_rgb(0_0_0/0.06)]"
+                  : "border-transparent text-muted-foreground hover:border-border hover:bg-card/70 hover:text-foreground"
               )}
             >
-              {t.label}
-              <span className="ml-2 hidden text-xs font-normal text-muted-foreground sm:inline">
+              <span className={cn("block truncate text-sm font-semibold", tab === t.id && "text-brand")}>
+                {t.label}
+              </span>
+              <span className="mt-0.5 block truncate text-[11px] font-normal text-muted-foreground">
                 {t.hint}
               </span>
             </button>
@@ -1169,11 +1185,11 @@ export default function PurchaseHub() {
                 aside={
                   <button
                     type="button"
-                    onClick={() => void loadReceivingBalances()}
+                    onClick={() => void loadReceivingBalances(true)}
                     className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
                   >
                     <RefreshCw className="size-3.5" />
-                    {dataSource === "demo" ? "Connect live stock" : "Refresh"}
+                    {dataSource === "live" ? "Refresh" : dataSource === "loading" ? "Syncing…" : "Reconnect"}
                   </button>
                 }
               />

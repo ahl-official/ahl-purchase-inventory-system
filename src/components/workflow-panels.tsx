@@ -177,6 +177,17 @@ export function HeadOfficeIssuePanel() {
   const recipients = MOCK_USERS.filter((user) =>
     isFurniture ? user.role !== "Approver" : user.role === "Floor"
   );
+  const sortedProducts = useMemo(
+    () =>
+      [...products].sort(
+        (a, b) =>
+          Number((b.headOfficeAvailable ?? 0) > 0) -
+            Number((a.headOfficeAvailable ?? 0) > 0) ||
+          (b.headOfficeAvailable ?? 0) - (a.headOfficeAvailable ?? 0) ||
+          a.name.localeCompare(b.name)
+      ),
+    [products]
+  );
 
   const submit = async () => {
     if (!product || !recipient || !categoryId || Number(qty) <= 0) { setBanner({ tone: "error", title: "Complete the issue", text: "Select product, technician, service category and quantity." }); return; }
@@ -195,21 +206,165 @@ export function HeadOfficeIssuePanel() {
     else setBanner({ tone: "error", title: result.error, text: result.message });
   };
 
-  return <div className="space-y-4">
-    {banner && <StatusBanner tone={banner.tone} title={banner.title}>{banner.text}</StatusBanner>}
-    {error && <StatusBanner tone="error" title="Live data unavailable">{error}</StatusBanner>}
-    <Panel><PanelHeader title="Issue directly from Head Office" description="Satvik can give stock straight to a technician. This bypasses Hitesh and does not change Salon Floor stock." />
-      <div className="grid gap-4 p-5 sm:grid-cols-2">
-        <Field><FieldLabel>Product</FieldLabel><Select value={productId} onChange={(e) => { setProductId(e.target.value); setRecipient(""); setCategoryId(""); }} disabled={loading || busy}><option value="">Select product</option>{products.map((p) => <option key={p.productId} value={p.productId}>{p.name} · {p.productType} · {p.headOfficeAvailable ?? 0} available</option>)}</Select></Field>
-        <Field><FieldLabel>Quantity</FieldLabel><TextInput type="number" min="0.01" step="0.01" value={qty} onChange={(e) => setQty(e.target.value)} disabled={busy} /></Field>
-        <Field><FieldLabel>{isFurniture ? "Assigned employee" : "Technician"}</FieldLabel><Select value={recipient} onChange={(e) => setRecipient(e.target.value)} disabled={busy || !product}><option value="">{isFurniture ? "Select employee" : "Select technician"}</option>{recipients.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select></Field>
-        <Field><FieldLabel>Service / category</FieldLabel><Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} disabled={busy || !product}><option value="">Select where it will be used</option>{MOCK_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
-        <Field className="sm:col-span-2"><FieldLabel>Note</FieldLabel><TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Reason, client, room or purpose" disabled={busy} /></Field>
-        <Button onClick={() => void submit()} disabled={busy || loading} className="sm:w-fit">{busy && <Loader2 className="size-4 animate-spin" />}{isFurniture ? "Mark In Use" : "Issue stock"}</Button>
-      </div>
-    </Panel>
-    <Panel><PanelHeader title="Furniture currently In Use" description="Return it to Head Office or close it as damaged, lost or disposed." />
-      {assets.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No assets currently marked In Use.</p> : <ul className="divide-y divide-border">{assets.map((a) => <li key={a.assignmentId} className="space-y-2 p-4"><div className="text-sm"><strong>{a.productName}</strong> · {a.qty} {a.uom} · {a.assignedTo}</div><div className="flex flex-wrap gap-2">{["RETURNED", "DAMAGED", "LOST", "DISPOSED"].map((s) => <Button key={s} size="sm" variant="outline" disabled={busy} onClick={() => void updateAsset(a.assignmentId, s)}>{s}</Button>)}</div></li>)}</ul>}
-    </Panel>
-  </div>;
+  return (
+    <div className="space-y-4">
+      {banner && (
+        <StatusBanner tone={banner.tone} title={banner.title}>
+          {banner.text}
+        </StatusBanner>
+      )}
+      {error && (
+        <StatusBanner tone="error" title="Live data unavailable">
+          {error}
+        </StatusBanner>
+      )}
+
+      <Panel className="overflow-hidden">
+        <PanelHeader
+          title="Issue directly from Head Office"
+          description="Give stock to a technician without moving it through Salon Floor."
+          aside={
+            product ? (
+              <div className="rounded-lg bg-brand-subtle px-3 py-1.5 text-right">
+                <p className="text-sm font-semibold tabular text-brand">
+                  {product.headOfficeAvailable ?? 0} {product.uom}
+                </p>
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  available
+                </p>
+              </div>
+            ) : undefined
+          }
+        />
+
+        <div className="grid gap-4 p-5 lg:grid-cols-6">
+          <Field className="lg:col-span-4">
+            <FieldLabel step={1}>Product</FieldLabel>
+            <Select
+              value={productId}
+              onChange={(event) => {
+                setProductId(event.target.value);
+                setRecipient("");
+                setCategoryId("");
+              }}
+              disabled={loading || busy}
+            >
+              <option value="">Select a Head Office product</option>
+              {sortedProducts.map((item) => (
+                <option key={item.productId} value={item.productId}>
+                  {item.name} · {item.productType} · {item.headOfficeAvailable ?? 0} {item.uom}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field className="lg:col-span-2">
+            <FieldLabel step={2}>Quantity</FieldLabel>
+            <TextInput
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={qty}
+              onChange={(event) => setQty(event.target.value)}
+              disabled={busy || !product}
+            />
+          </Field>
+
+          <Field className="lg:col-span-3">
+            <FieldLabel step={3}>{isFurniture ? "Assigned employee" : "Technician"}</FieldLabel>
+            <Select
+              value={recipient}
+              onChange={(event) => setRecipient(event.target.value)}
+              disabled={busy || !product}
+            >
+              <option value="">{isFurniture ? "Select employee" : "Select technician"}</option>
+              {recipients.map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field className="lg:col-span-3">
+            <FieldLabel step={4}>Service / category</FieldLabel>
+            <Select
+              value={categoryId}
+              onChange={(event) => setCategoryId(event.target.value)}
+              disabled={busy || !product}
+            >
+              <option value="">Select where it will be used</option>
+              {MOCK_CATEGORIES.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field className="lg:col-span-4">
+            <FieldLabel optional>Note</FieldLabel>
+            <TextInput
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Client, room, job or reason"
+              disabled={busy}
+            />
+          </Field>
+
+          <div className="flex items-end lg:col-span-2">
+            <Button
+              onClick={() => void submit()}
+              disabled={busy || loading || !product}
+              className="h-11 w-full font-semibold"
+            >
+              {busy && <Loader2 className="size-4 animate-spin" />}
+              {isFurniture ? "Mark In Use" : "Issue to technician"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border bg-muted/40 px-5 py-3 text-xs text-muted-foreground">
+          <span><strong className="text-foreground">From:</strong> Head Office</span>
+          <span><strong className="text-foreground">Recorded against:</strong> Technician + service</span>
+          <span><strong className="text-foreground">Salon Floor:</strong> Not affected</span>
+        </div>
+      </Panel>
+
+      {(assets.length > 0 || products.some((item) => item.productType.toLowerCase() === "furniture")) && (
+        <Panel>
+          <PanelHeader
+            title="Furniture currently In Use"
+            description="Return it to Head Office or close it as damaged, lost or disposed."
+          />
+          {assets.length === 0 ? (
+            <p className="p-5 text-sm text-muted-foreground">No assets currently marked In Use.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {assets.map((asset) => (
+                <li key={asset.assignmentId} className="space-y-2 p-4">
+                  <div className="text-sm">
+                    <strong>{asset.productName}</strong> · {asset.qty} {asset.uom} · {asset.assignedTo}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {["RETURNED", "DAMAGED", "LOST", "DISPOSED"].map((status) => (
+                      <Button
+                        key={status}
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => void updateAsset(asset.assignmentId, status)}
+                      >
+                        {status}
+                      </Button>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      )}
+    </div>
+  );
 }
