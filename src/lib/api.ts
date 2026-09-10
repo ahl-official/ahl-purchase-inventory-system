@@ -18,6 +18,12 @@
 import { createHmac } from "node:crypto";
 
 export type AppsScriptAction =
+  | "operations.read"
+  | "catalogue.read"
+  | "order.create"
+  | "order.cancel"
+  | "handover.cancel"
+  | "stock.adjust"
   | "auth.login"
   | "stock.issue"
   | "stock.receive"
@@ -114,10 +120,6 @@ export async function callAppsScript<TResponse = unknown, TData = unknown>(
   payload: AppsScriptPayload<TData>,
   options: { timeoutMs?: number } = {}
 ): Promise<ApiResult<TResponse>> {
-  const first = await attemptCallAppsScript<TResponse, TData>(payload, options);
-  if (first.ok || first.error !== "BAD_GATEWAY") return first;
-
-  await new Promise((resolve) => setTimeout(resolve, 1000));
   return attemptCallAppsScript<TResponse, TData>(payload, options);
 }
 

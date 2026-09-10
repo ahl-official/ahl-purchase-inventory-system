@@ -5,7 +5,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Field, FieldLabel, Panel, PanelHeader, Select, StatusBanner, TextInput } from "@/components/ui/field";
 import { postAction } from "@/lib/api-client";
-import { MOCK_CATEGORIES, MOCK_USERS, HEAD_OFFICE_LOCATION_ID } from "@/lib/mock-data";
+import { useCatalogue } from '@/lib/catalogue';
 
 type Banner = { tone: "success" | "error"; title: string; text: string } | null;
 
@@ -159,6 +159,7 @@ export function OpeningApprovalsPanel() {
 interface AssetAssignment { assignmentId: string; productName: string; qty: number; uom: string; assignedTo: string; }
 
 export function HeadOfficeIssuePanel() {
+  const { categories: MOCK_CATEGORIES, people: MOCK_USERS, headOfficeLocationId: HEAD_OFFICE_LOCATION_ID } = useCatalogue();
   const { products, loading, error, load } = useLiveProducts();
   const [productId, setProductId] = useState("");
   const [qty, setQty] = useState("1");

@@ -67,21 +67,24 @@ sig  jP4Qyk1HuzvGNYRBND1Q5Rurj5xJlwc+Uff/vJfATKk=
 
 **Sheet: "AHL Flow DB"** — `16LFKuCYPOk46dWalYXHcoDYuqPf6mn213pfSp0ukEe4`
 
-Ten operational tabs, deliberately consolidated down from an earlier 21-table design that
+Twelve tabs, deliberately consolidated down from an earlier 21-table design that
 modelled a system nobody has built. Schema is defined once in
 `apps-script/Setup.gs` under `SCHEMA`.
 
 | Tab | Columns |
 |---|---|
-| `PRODUCTS` | ProductID, Name, CategoryID, IssueUOM, PurchaseUOM, ConvFactor, Cost, GSTPercent, VendorID, ReorderLevel, Active, Notes |
+| `PRODUCTS` | ProductID, Name, CategoryID, IssueUOM, PurchaseUOM, ConvFactor, Cost, GSTPercent, VendorID, ReorderLevel, Active, Notes, ProductType |
 | `PEOPLE` | UserID, Email, Name, Role, LocationID, ApprovalLimit, Active, PasswordHash, PasswordSalt |
 | `USER` | UserID (login email), Password, Active — temporary simple login store |
-| `LISTS` | Type, Code, Name, Extra, Active — `Type` ∈ CATEGORY \| VENDOR \| LOCATION \| UOM |
-| `LEDGER` | TxnID, Date, Type, Direction, ProductID, Qty, UOM, QtyBase, LocationID, CategoryID, PersonID, VendorID, HandoverID, PORef, InvoiceNo, Amount, BillPhotoURL, Actor, Status, Notes |
+| `LISTS` | Type, Code, Name, Extra, Active — `Type` ∈ CATEGORY \| VENDOR \| LOCATION \| UOM \| SETTING |
+| `LEDGER` | TxnID, Date, Type, Direction, ProductID, Qty, UOM, QtyBase, LocationID, CategoryID, PersonID, VendorID, HandoverID, PORef, InvoiceNo, Amount, BillPhotoURL, Actor, Status, Notes, ProductPhotoURL, ReceivedByUserId |
 | `REQUESTS` | RequestID, Date, ProductID, Qty, RequestedBy, Urgency, EstValue, Status, ApprovedBy, ApprovedAt, Actor, Notes, NewProductName, Source |
-| `OPENING_COUNTS` | CountID, Date, ProductID, Qty, LocationID, CountedBy, Status, ReviewedBy, ReviewedAt, Notes |
-| `CONFIG` | Key, Value, Notes |
+| `OPENING_COUNTS` | CountID, Date, ProductID, Qty (base units), LocationID, CountedBy, Status, ReviewedBy, ReviewedAt, Notes, QtyOrdered, QtyReceived, CountUOM |
+| `OPENING_SATVIK` | Read-only live view of `OPENING_COUNTS` for Head Office (`LOC-01`), with product names and shortages |
+| `OPENING_HITESH` | Read-only live view of `OPENING_COUNTS` for Salon Floor (`LOC-02`), with product names and shortages |
 | `AUDIT` | AuditID, Timestamp, Actor, Action, Ref, Detail, Result |
+| `REPORT_CITY_TRANSFERS` | Reporting view for transfer history and value by city |
+| `REPORT_INVENTORY` | Monthly inventory reporting view by city, business unit and product |
 
 **Source of the seed data:** the original 21-tab sheet "AHL"
 (`1uXdnPiAvC5AH21jwCYVI6mEWQ7nyGXY8USdQky-RaKg`). `setupDatabase()` in

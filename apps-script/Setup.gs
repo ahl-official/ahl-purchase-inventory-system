@@ -25,6 +25,8 @@ var SOURCE_SHEET_ID = "1uXdnPiAvC5AH21jwCYVI6mEWQ7nyGXY8USdQky-RaKg"; // AHL
  * columns through these names, never by position.
  */
 var SCHEMA = {
+  PURCHASE_ORDERS: ['OrderID','Date','ProductID','VendorID','QtyOrdered','UOM','RequestID','Status','Actor','Notes'],
+  OPERATIONS: ['OperationID','Date','Actor','Action','Status','Result'],
   PRODUCTS: [
     "ProductID", "Name", "CategoryID", "IssueUOM", "PurchaseUOM", "ConvFactor",
     "Cost", "GSTPercent", "VendorID", "ReorderLevel", "Active", "Notes",
@@ -55,21 +57,20 @@ var SCHEMA = {
   ],
   OPENING_COUNTS: [
     "CountID", "Date", "ProductID", "Qty", "LocationID", "CountedBy",
-    "Status", "ReviewedBy", "ReviewedAt", "Notes"
+    "Status", "ReviewedBy", "ReviewedAt", "Notes", "QtyOrdered",
+    "QtyReceived", "CountUOM"
   ],
-  AUDIT: ["AuditID", "Timestamp", "Actor", "Action", "Ref", "Detail", "Result"],
-  REPORT_CITY_TRANSFERS: [
-    "Date", "Month", "Product Name", "Category", "From City", "To City",
-    "Units Transferred", "Cost Per Unit", "Total Value", "Reason", "Approved By"
+  OPENING_SATVIK: [
+    "Opening ID", "Date", "Product ID", "Product Name", "Qty Ordered",
+    "Qty Received", "Count UOM", "Base Qty", "Base UOM", "Short Qty",
+    "Location", "Counted By", "Status", "Reviewed By", "Reviewed At", "Notes"
   ],
-  REPORT_INVENTORY: [
-    "Month", "City", "Business Unit", "Category", "Product Name", "Tracking Type",
-    "Batch/Serial No.", "Opening Stock", "Purchases (Units)", "Transfer In",
-    "Transfer Out", "Total Available (Auto)", "Units Consumed in Service (AHL)",
-    "Units Consumed in Service (ALC)", "Units Consumed in Service (Shared)",
-    "Units Sold as Retail (Auto from Revenue)", "Total Out (Auto)", "Closing Stock (Auto)",
-    "Cost Per Unit (INR)", "Closing Stock Value (Auto)"
-  ]
+  OPENING_HITESH: [
+    "Opening ID", "Date", "Product ID", "Product Name", "Qty Ordered",
+    "Qty Received", "Count UOM", "Base Qty", "Base UOM", "Short Qty",
+    "Location", "Counted By", "Status", "Reviewed By", "Reviewed At", "Notes"
+  ],
+  AUDIT: ["AuditID", "Timestamp", "Actor", "Action", "Ref", "Detail", "Result"]
 };
 
 // Fallback config, written only when the source sheet has none.
@@ -98,6 +99,8 @@ function setupDatabase() {
     LEDGER: "#0F9D58",
     REQUESTS: "#F4B400",
     OPENING_COUNTS: "#00897B",
+    OPENING_SATVIK: "#00897B",
+    OPENING_HITESH: "#673AB7",
     AUDIT: "#A142F4",
     REPORT_CITY_TRANSFERS: "#673AB7",
     REPORT_INVENTORY: "#3F51B5"
@@ -112,14 +115,18 @@ function setupDatabase() {
   // 2. Migrate master data if a source is configured.
   if (SOURCE_SHEET_ID) {
     var source = SpreadsheetApp.openById(SOURCE_SHEET_ID);
-    report.push("PRODUCTS rows: " + migrateProducts(source, target));
-    report.push("PEOPLE rows: " + migratePeople(source, target));
-    report.push("LISTS rows: " + migrateLists(source, target));
+    if(target.getSheetByName('PRODUCTS').getLastRow()<2)report.push("PRODUCTS rows: " + migrateProducts(source, target));
+    if(target.getSheetByName('PEOPLE').getLastRow()<2)report.push("PEOPLE rows: " + migratePeople(source, target));
+    if(target.getSheetByName('LISTS').getLastRow()<2)report.push("LISTS rows: " + migrateLists(source, target));
   } else {
     report.push("No SOURCE_SHEET_ID set - master tabs left empty.");
   }
 
-  // 3. Remove the default empty Sheet1 if it is still untouched.
+  // 3. Keep the two person-specific opening-balance tabs as derived views.
+  // OPENING_COUNTS stays canonical so the app never has to reconcile two ledgers.
+  upgradeInventoryDatabase();
+
+  // 4. Remove the default empty Sheet1 if it is still untouched.
   var stray = target.getSheetByName("Sheet1");
   if (stray && stray.getLastRow() === 0 && target.getSheets().length > 1) {
     target.deleteSheet(stray);
@@ -129,6 +136,30 @@ function setupDatabase() {
   var summary = report.join("\n");
   console.log(summary);
   return summary;
+}
+
+/** Builds a readable, formula-backed view over canonical opening-count rows. */
+function ensureOpeningView(ss, sheetName, locationId, emptyMessage) {
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return;
+
+  var formula = '=ARRAYFORMULA(IFERROR(FILTER({' +
+    'OPENING_COUNTS!A2:A,OPENING_COUNTS!B2:B,OPENING_COUNTS!C2:C,' +
+    'IFNA(VLOOKUP(OPENING_COUNTS!C2:C,PRODUCTS!A:B,2,FALSE),""),' +
+    'OPENING_COUNTS!K2:K,OPENING_COUNTS!L2:L,OPENING_COUNTS!M2:M,' +
+    'OPENING_COUNTS!D2:D,' +
+    'IFNA(VLOOKUP(OPENING_COUNTS!C2:C,PRODUCTS!A:D,4,FALSE),""),' +
+    'IF(OPENING_COUNTS!K2:K="","",OPENING_COUNTS!K2:K-OPENING_COUNTS!L2:L),' +
+    'OPENING_COUNTS!E2:E,OPENING_COUNTS!F2:F,OPENING_COUNTS!G2:G,' +
+    'OPENING_COUNTS!H2:H,OPENING_COUNTS!I2:I,OPENING_COUNTS!J2:J},' +
+    'OPENING_COUNTS!E2:E="' + locationId + '"),"' + emptyMessage + '"))';
+
+  sheet.getRange("A2").setFormula(formula);
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidth(4, 240);
+  sheet.setColumnWidth(16, 340);
+  sheet.getRange("B:B").setNumberFormat("dd mmm yyyy");
+  sheet.getRange("O:O").setNumberFormat("dd mmm yyyy hh:mm");
 }
 
 /** Creates a tab with a frozen, styled header row. Returns true if it was new. */

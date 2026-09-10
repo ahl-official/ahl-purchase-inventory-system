@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/table";
 import { postAction } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { MOCK_CATEGORIES, MOCK_USERS } from "@/lib/mock-data";
+import { useCatalogue } from '@/lib/catalogue';
 
 interface StockRow {
   productId: string;
@@ -119,6 +119,7 @@ function csvCell(value: unknown) {
 }
 
 export default function DashboardPage() {
+  const { categories: MOCK_CATEGORIES, people: MOCK_USERS } = useCatalogue();
   const [data, setData] = useState<DashboardData | null>(null);
   const [dataSource, setDataSource] = useState<"demo" | "live">("demo");
   const [loading, setLoading] = useState(false);

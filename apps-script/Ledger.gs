@@ -35,10 +35,11 @@ function processStockIssue(payload) {
   // stale by the time it reaches here.
   var balance = computeAvailableBalance(req.productId, locationId);
   var total = req.splits.reduce(function (sum, s) {
-    var splitQty = Number(s.qty) || 0;
+    var splitQty = positiveQuantity(s.qty,product,false);
     if (splitQty <= 0) throw new Error("VALIDATION: Every split needs a quantity above zero.");
     if (!s.categoryId) throw new Error("VALIDATION: Every split needs a service category.");
     if (!s.recipientUserId) throw new Error("VALIDATION: Every split needs a technician.");
+    if (!readAll('PEOPLE').some(function(r){return r.UserID===s.recipientUserId && isTruthy(r.Active);})) throw new Error('VALIDATION: Select an active recipient.');
     return sum + splitQty;
   }, 0);
 
@@ -109,8 +110,15 @@ function processStockReceive(payload) {
   var product = getProduct(req.productId);
   if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
 
-  var qty = Number(req.qty) || 0;
+  var qty = positiveQuantity(req.qty,product,false);
   if (qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
+
+  if(req.poId) {
+    var order=listPurchaseOrders().find(function(o){return o.orderId===req.poId;});
+    if(!order || order.productId!==req.productId || order.vendorId!==req.vendorId || ['CANCELLED','RECEIVED'].indexOf(order.status)>=0) throw new Error('VALIDATION: Select an open order matching product and vendor.');
+    if(qty>order.remaining) throw new Error('VALIDATION: Received quantity exceeds the outstanding order.');
+    if(order.uom!==(product.PurchaseUOM || product.IssueUOM)) throw new Error('VALIDATION: Product units changed since ordering. Ask management to reconcile this order.');
+  }
 
   var txnId = nextId("TXN");
 
@@ -231,7 +239,7 @@ function processPurchaseRequest(payload) {
   var estValue = Number(req.estimatedValue) || (product ? qty * (Number(product.Cost) || 0) : 0);
   var threshold = getConfigNumber("ApprovalThreshold", 5000);
   var terminalStatus = product ? "OPEN" : "NEW_PRODUCT";
-  var requesterRole = (getUser(payload.actor) || {}).Role;
+  var requesterRole = appRole((getUser(payload.actor) || {}).Role);
 
   var status, approvedBy;
 
@@ -375,6 +383,10 @@ function processStockHandover(payload) {
 
   var fromLocationId = req.fromLocationId || getConfig("HeadOfficeLocationID", "LOC-01");
   var toLocationId = req.toLocationId || getConfig("SalonFloorLocationID", "LOC-02");
+  if(fromLocationId!==getConfig('HeadOfficeLocationID','LOC-01') || toLocationId!==getConfig('SalonFloorLocationID','LOC-02')) throw new Error('FORBIDDEN: Handovers must go from Head Office to Salon Floor.');
+  positiveQuantity(qty,product,false);
+  var receiver=findRecord('PEOPLE','UserID',req.toUserId);
+  if(!receiver || !isTruthy(receiver.Active) || appRole(receiver.Role)!=='ProductDistributor') throw new Error('VALIDATION: Select a Salon Floor receiver.');
 
   // Pending handovers reserve stock but do not move custody until Hitesh's
   // recount. This prevents the same Receiving stock being promised twice.
@@ -458,26 +470,31 @@ function processConfirmHandover(payload) {
   }
 
   var countedQty = Number(req.countedQty);
-  if (!countedQty || countedQty <= 0) {
+  if (!isFinite(countedQty) || countedQty < 0) {
     throw new Error("VALIDATION: Enter the quantity physically counted.");
   }
 
   var isMismatch = Math.abs(countedQty - expectedQty) > 0.000001;
 
+  var changedRows = [];
   for (var i = 0; i < values.length; i++) {
     if (String(values[i][handoverIdx]).trim() !== handoverId) continue;
     if (String(values[i][statusIdx]).trim() !== "PENDING_CONFIRM") continue;
 
     if (!isMismatch) {
-      t.sheet.getRange(i + 2, statusIdx + 1).setValue("CONFIRMED");
+      values[i][statusIdx] = "CONFIRMED";
     }
     
     if (req.notes) {
       var existing = values[i][notesIdx] ? values[i][notesIdx] + " | " : "";
-      t.sheet.getRange(i + 2, notesIdx + 1).setValue(existing + "Hitesh: " + req.notes);
+      values[i][notesIdx] = existing + "Receiver counted " + countedQty + ": " + req.notes;
     }
+    changedRows.push(i);
     confirmed++;
   }
+
+  if(changedRows.length!==2 || changedRows[1]!==changedRows[0]+1) throw new Error('VALIDATION: This handover is already decided or needs management review.');
+  t.sheet.getRange(changedRows[0]+2,1,2,t.headers.length).setValues(changedRows.map(function(i){return values[i];}));
 
   if (isMismatch) {
     // We flush sheet updates explicitly before throwing so the notes hit the sheet
@@ -522,9 +539,10 @@ function processOpeningStockSubmit(payload) {
   var product = getProduct(req.productId);
   if (!product) throw new Error("UNKNOWN_PRODUCT: Select a valid product.");
 
-  var qty = Number(req.qty);
+  var qty = positiveQuantity(req.qty,product,true);
   if (isNaN(qty) || qty < 0) throw new Error("VALIDATION: Opening quantity cannot be negative.");
   var locationId = openingLocationForActor(payload.actor, req.locationId);
+  if(readAll('LEDGER').some(function(r){return r.ProductID===req.productId && r.LocationID===locationId && r.Status!=='VOID';})) throw new Error('VALIDATION: Stock movement already exists. Use a recorded count correction.');
 
   var existing = readAll("OPENING_COUNTS").filter(function (row) {
     return String(row.ProductID) === String(req.productId) &&
@@ -539,7 +557,9 @@ function processOpeningStockSubmit(payload) {
   appendRecord("OPENING_COUNTS", {
     CountID: countId, Date: new Date(), ProductID: req.productId, Qty: qty,
     LocationID: locationId, CountedBy: payload.actor, Status: "PENDING",
-    Notes: req.notes || ""
+    Notes: req.notes || "", QtyOrdered: req.qtyOrdered || "",
+    QtyReceived: req.qtyReceived == null ? qty : Number(req.qtyReceived),
+    CountUOM: req.countUom || product.IssueUOM || ""
   });
   audit(payload.actor, "opening.submit", countId, { productId: req.productId, qty: qty, locationId: locationId });
   return { countId: countId, status: "PENDING", locationId: locationId };
@@ -559,7 +579,9 @@ function listOpeningCounts(payload) {
       productName: product ? product.Name : row.ProductID, qty: Number(row.Qty) || 0,
       uom: product ? product.IssueUOM : "", locationId: row.LocationID,
       countedBy: row.CountedBy, status: row.Status, reviewedBy: row.ReviewedBy || "",
-      notes: row.Notes || ""
+      notes: row.Notes || "", qtyOrdered: row.QtyOrdered === "" ? null : Number(row.QtyOrdered),
+      qtyReceived: row.QtyReceived === "" ? Number(row.Qty) || 0 : Number(row.QtyReceived),
+      countUom: row.CountUOM || (product ? product.IssueUOM : "")
     };
   }).reverse();
 }

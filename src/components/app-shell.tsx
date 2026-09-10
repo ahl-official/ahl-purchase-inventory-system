@@ -78,7 +78,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Monogram />
             <span className="text-[0.9375rem] font-semibold tracking-tight text-foreground">
-              Flow
+              Inventory
             </span>
           </Link>
 

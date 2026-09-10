@@ -57,7 +57,51 @@ function doPost(e) {
     try {
       var result;
 
+      var roles = {
+        'stock.issue':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'stock.receive':['PurchaseCoordinator','Admin'],
+        'purchase.request':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'purchase.approve':['PurchaseCoordinator','Admin'],
+        'stock.handover':['PurchaseCoordinator','Admin'],
+        'stock.confirmHandover':['ProductDistributor','Admin'],
+        'handover.list':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'opening.submit':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'opening.list':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'opening.approve':['Admin'], 'asset.issue':['PurchaseCoordinator','Admin'],
+        'asset.list':['PurchaseCoordinator','Admin'], 'asset.status':['PurchaseCoordinator','Admin'],
+        'dashboard.read':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'operations.read':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'catalogue.read':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'order.create':['PurchaseCoordinator','Admin'], 'order.cancel':['PurchaseCoordinator','Admin'],
+        'handover.cancel':['PurchaseCoordinator','Admin'],
+        'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin']
+      };
+      if(payload.action !== 'auth.login') {
+        if(!roles[payload.action]) throw new Error('UNKNOWN_ACTION: Unsupported action.');
+        requireAppRole(payload.actor,roles[payload.action]);
+      }
+
+      // A repeated submit cannot write stock twice, even after a lost response.
+      var mutation=payload.action!=='auth.login' && !/\.(read|list)$/.test(payload.action);
+      var operationId=payload.data && payload.data.operationId;
+      if(mutation) {
+        if(!operationId || !/^[a-zA-Z0-9-]{16,80}$/.test(operationId)) throw new Error('VALIDATION: Refresh the application before submitting.');
+        var prior=findRecord('OPERATIONS','OperationID',operationId);
+        if(prior) {
+          if(prior.Actor!==payload.actor || prior.Action!==payload.action) throw new Error('FORBIDDEN: Invalid operation reference.');
+          if(prior.Status==='COMPLETED') return respondJson({success:true,data:JSON.parse(prior.Result)},200);
+          throw new Error('OUTCOME_UNKNOWN: This submission was already started. Refresh and ask management to check it before making another submission.');
+        }
+        appendRecord('OPERATIONS',{OperationID:operationId,Date:new Date(),Actor:payload.actor,Action:payload.action,Status:'STARTED',Result:''});
+      }
+
       switch (payload.action) {
+        case 'operations.read': result=getOperations(payload); break;
+        case 'catalogue.read': result=getCatalogue(); break;
+        case 'order.create': result=processOrderCreate(payload); break;
+        case 'order.cancel': result=processOrderCancel(payload); break;
+        case 'handover.cancel': result=processHandoverCancel(payload); break;
+        case 'stock.adjust': result=processStockAdjustment(payload); break;
         case "auth.login":
           result = processAuthLogin(payload);
           break;
@@ -114,6 +158,7 @@ function doPost(e) {
           );
       }
 
+      if(mutation) updateRecordFields('OPERATIONS','OperationID',operationId,{Status:'COMPLETED',Result:JSON.stringify(result)});
       return respondJson({ success: true, data: result }, 200);
     } catch (handlerErr) {
       // Handlers throw "CODE: human message" so the client can tell a business

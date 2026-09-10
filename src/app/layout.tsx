@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { PwaStatus } from '@/components/pwa-status';
 
 // Inter holds up at the small sizes an operations table needs and ships real
 // tabular figures. JetBrains Mono is reserved for IDs (TXN-, HND-, PR-).
@@ -19,12 +20,13 @@ const mono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "AHL Flow",
+    default: "AHL Purchase & Inventory",
     template: "%s · AHL Flow",
   },
   description:
     "Inventory, purchase requests and goods receipt for American Hair Line.",
-  applicationName: "AHL Flow",
+  applicationName: "AHL Inventory",
+  icons: { apple:'/icons/apple-touch-icon.png', icon:'/icons/icon-192.png' },
   appleWebApp: {
     capable: true,
     title: "AHL Flow",
@@ -49,7 +51,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${sans.variable} ${mono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col bg-background">
-        <Providers>{children}</Providers>
+        <Providers><PwaStatus />{children}</Providers>
       </body>
     </html>
   );

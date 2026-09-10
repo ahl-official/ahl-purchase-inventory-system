@@ -18,6 +18,12 @@ import { callAppsScript, type AppsScriptAction } from "@/lib/api";
 type SessionAction = Exclude<AppsScriptAction, "auth.login">;
 
 const ACTION_ROLES: Record<SessionAction, string[]> = {
+  "operations.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "catalogue.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "order.create": ["PurchaseCoordinator", "Admin"],
+  "order.cancel": ["PurchaseCoordinator", "Admin"],
+  "handover.cancel": ["PurchaseCoordinator", "Admin"],
+  "stock.adjust": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the
