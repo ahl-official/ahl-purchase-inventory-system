@@ -45,7 +45,7 @@ var SCHEMA = {
     "TxnID", "Date", "Type", "Direction", "ProductID", "Qty", "UOM", "QtyBase",
     "LocationID", "CategoryID", "PersonID", "VendorID", "HandoverID",
     "PORef", "InvoiceNo", "Amount", "BillPhotoURL", "Actor", "Status", "Notes",
-    "ProductPhotoURL", "ReceivedByUserId"
+    "ProductPhotoURL", "ReceivedByUserId", "BusinessUnit"
   ],
   REQUESTS: [
     "RequestID", "Date", "ProductID", "Qty", "RequestedBy", "Urgency",

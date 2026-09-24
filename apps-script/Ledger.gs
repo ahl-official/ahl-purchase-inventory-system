@@ -10,6 +10,14 @@
  * A single issue can be split across categories and people; all splits share a
  * HandoverID so the movement can be reconstructed or reversed as one event.
  */
+var BUSINESS_UNITS = ["AHL", "Alchemane", "Shared"];
+
+/** The business unit a category belongs to (LISTS.Extra); Shared when it has none. */
+function businessUnitOf(categoryId) {
+  var row = readAll("LISTS").filter(function (v) { return v.Type === "CATEGORY" && v.Code === categoryId; })[0];
+  return row && BUSINESS_UNITS.indexOf(row.Extra) >= 0 ? row.Extra : "Shared";
+}
+
 function processStockIssue(payload) {
   var req = payload.data;
   var actorRole = appRole((getUser(payload.actor) || {}).Role);
@@ -36,6 +44,7 @@ function processStockIssue(payload) {
     var splitQty = positiveQuantity(s.qty,product,false);
     if (splitQty <= 0) throw new Error("VALIDATION: Every split needs a quantity above zero.");
     if (!s.categoryId) throw new Error("VALIDATION: Every split needs a service category.");
+    if (s.businessUnit && BUSINESS_UNITS.indexOf(s.businessUnit) < 0) throw new Error("VALIDATION: Choose AHL, Alchemane or Shared.");
     if (!s.recipientUserId) throw new Error("VALIDATION: Every split needs a technician.");
     if (!readAll('PEOPLE').some(function(r){return r.UserID===s.recipientUserId && isTruthy(r.Active);})) throw new Error('VALIDATION: Select an active recipient.');
     return sum + splitQty;
@@ -51,6 +60,7 @@ function processStockIssue(payload) {
 
   var handoverId = nextId("HND");
   var now = new Date();
+  ensureColumn("LEDGER", "BusinessUnit");
 
   var rows = req.splits.map(function (split) {
     var qty = Number(split.qty) || 0;
@@ -65,6 +75,7 @@ function processStockIssue(payload) {
       QtyBase: toBaseQty(product, qty, false),
       LocationID: locationId,
       CategoryID: split.categoryId || "",
+      BusinessUnit: split.businessUnit || businessUnitOf(split.categoryId),
       PersonID: split.recipientUserId || "",
       HandoverID: handoverId,
       Amount: qty * (Number(product.Cost) || 0),

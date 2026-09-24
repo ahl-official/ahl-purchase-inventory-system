@@ -65,6 +65,14 @@ function table(name) {
   return resolved;
 }
 
+/** Adds a header at the end of a tab if it is missing. Called on write paths only, inside the lock. */
+function ensureColumn(name, header) {
+  var t = table(name);
+  if (header in t.idx) return;
+  t.sheet.getRange(1, t.headers.length + 1).setValue(header);
+  delete MEMO_TABLES[name];
+}
+
 /** Every data row of a tab as plain objects keyed by header name. */
 function readAll(name) {
   if (MEMO_ROWS && MEMO_ROWS[name]) return MEMO_ROWS[name];

@@ -161,12 +161,14 @@ function processProductCreate(payload) {
 function getInventoryReport(payload) {
   var tz=Session.getScriptTimeZone(), month=String((payload.data || {}).month || '') || Utilities.formatDate(new Date(),tz,'yyyy-MM');
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('VALIDATION: Choose a month.');
-  var lists=readAll('LISTS'), city={}, cat={}, prod={}, issueCategory={};
+  var lists=readAll('LISTS'), city={}, cat={}, prod={}, issueUnit={};
   lists.forEach(function(l){if(l.Type==='LOCATION' && l.Extra) city[l.Code]=String(l.Extra); if(l.Type==='CATEGORY') cat[l.Code]={name:l.Name,unit:String(l.Extra || '')};});
   readAll('PRODUCTS').forEach(function(p){prod[p.ProductID]=p;});
   var ledger=readAll('LEDGER');
-  ledger.forEach(function(l){if(l.Type==='ISSUE') issueCategory[l.TxnID]=l.CategoryID;});
-  var bucket=function(categoryId){var u=(cat[categoryId] || {}).unit;return u==='AHL'?'ahl':u==='Alchemane'?'alc':'shared';};
+  // Older rows have no BusinessUnit; they fall back to their category's unit.
+  var unitOf=function(l){return l.BusinessUnit || (cat[l.CategoryID] || {}).unit;};
+  ledger.forEach(function(l){if(l.Type==='ISSUE') issueUnit[l.TxnID]=unitOf(l);});
+  var bucket=function(u){return u==='AHL'?'ahl':u==='Alchemane'||u==='ALC'?'alc':'shared';};
   var handoverCities={};
   ledger.forEach(function(l){
     if(l.Type!=='HANDOVER' || l.Status==='VOID' || l.Status==='PENDING_CONFIRM' || !city[l.LocationID]) return;
@@ -184,8 +186,8 @@ function getInventoryReport(payload) {
     r.closing+=q;
     if(m<month || l.Type==='OPENING') r.opening+=q;
     else if(l.Type==='RECEIPT') r.purchases+=q;
-    else if(l.Type==='ISSUE') r[bucket(l.CategoryID)]-=q;
-    else if(l.Type==='RETURN') r[bucket(issueCategory[l.PORef])]-=q;
+    else if(l.Type==='ISSUE') r[bucket(unitOf(l))]-=q;
+    else if(l.Type==='RETURN') r[bucket(issueUnit[l.PORef])]-=q;
     else if(l.Type==='HANDOVER'){if(crossCity(l.HandoverID)){if(q>0) r.tin+=q; else r.tout-=q;}}
     else r.adjustments+=q;
   });

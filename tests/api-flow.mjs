@@ -170,30 +170,32 @@ await t("city transfer to Delhi needs a receiver based in Delhi", async () => {
 });
 
 let issueTxn;
-await t("Hitesh issues A 60 GM (Shared) and C 20 ML (AHL); over-issue and wrong location are rejected", async () => {
-  const issue = (productId, qty, cat, from) => call(HITESH, "stock.issue", { productId, fromLocationId: from || state.SALON, splits: [{ qty, recipientUserId: state.hiteshId, categoryId: cat, notes: "test" }] });
-  okRes(await issue(A(), 60, "CAT-09"), "issue A");
-  okRes(await issue(C(), 20, "CAT-02"), "issue C");
+await t("issue: the chosen business unit beats the category; a missing one falls back to the category; a bad one is rejected", async () => {
+  const issue = (productId, qty, cat, from, bu) => call(HITESH, "stock.issue", { productId, fromLocationId: from || state.SALON, splits: [{ qty, recipientUserId: state.hiteshId, categoryId: cat, businessUnit: bu, notes: "test" }] });
+  okRes(await issue(A(), 60, "CAT-09", null, "AHL"), "issue A to AHL (category says Shared)");
+  okRes(await issue(C(), 20, "CAT-02", null, "Alchemane"), "issue C to Alchemane (category says AHL)");
+  okRes(await issue(A(), 5, "CAT-09"), "issue A with no business unit -> falls back to Shared");
+  rejected(await issue(A(), 1, "CAT-09", null, "Nobody"), "VALIDATION", "invalid business unit");
   rejected(await issue(A(), 9999, "CAT-09"), "INSUFFICIENT_STOCK");
   rejected(await issue(A(), 1, "CAT-09", state.HO), "FORBIDDEN", "issue from Head Office");
-  eq(await stock(A(), state.SALON), 140, "Salon A"); eq(await stock(C(), state.SALON), 30, "Salon C");
-  issueTxn = state.ops.history.find((h) => h.type === "ISSUE" && h.productId === A())?.txnId;
+  eq(await stock(A(), state.SALON), 135, "Salon A"); eq(await stock(C(), state.SALON), 30, "Salon C");
+  issueTxn = state.ops.history.find((h) => h.type === "ISSUE" && h.productId === A() && h.qty === 60)?.txnId;
   if (!issueTxn) throw new Error("issue not in history");
 });
 await t("return 10 GM of A, and Satvik records 5 GM damaged", async () => {
   okRes(await call(HITESH, "stock.adjust", { productId: A(), qty: 10, kind: "RETURN", sourceTxnId: issueTxn, notes: "unused" }), "return");
   rejected(await call(HITESH, "stock.adjust", { productId: A(), qty: 100, kind: "RETURN", sourceTxnId: issueTxn, notes: "too many" }), "VALIDATION", "return more than issued");
   okRes(await call(SATVIK, "stock.adjust", { productId: A(), qty: 5, kind: "DAMAGE", notes: "broken tube" }), "damage");
-  eq(await stock(A(), state.SALON), 150, "Salon A after return"); eq(await stock(A(), state.HO), 395, "HO A after damage");
+  eq(await stock(A(), state.SALON), 145, "Salon A after return"); eq(await stock(A(), state.HO), 395, "HO A after damage");
 });
 
 await t("monthly report matches the hand-calculated numbers", async () => {
   const rep = okRes(await call(SATVIK, "inventoryReport.read", {}), "report");
   const row = (id) => rep.rows.find((r) => r.productId === id && r.city === "Mumbai");
   const want = {
-    A: { opening: 0, purchases: 600, transferIn: 0, transferOut: 0, consumedAHL: 0, consumedShared: 50, adjustments: -5, closing: 545, closingValue: 1635, businessUnit: "Shared" },
+    A: { opening: 0, purchases: 600, transferIn: 0, transferOut: 0, consumedAHL: 50, consumedALC: 0, consumedShared: 5, adjustments: -5, closing: 540, closingValue: 1620, businessUnit: "Shared" },
     B: { opening: 0, purchases: 1000, consumedAHL: 0, consumedALC: 0, consumedShared: 0, closing: 1000, closingValue: 4000, businessUnit: "Alchemane" },
-    C: { opening: 0, purchases: 300, consumedAHL: 20, consumedShared: 0, closing: 280, closingValue: 3500, businessUnit: "AHL" },
+    C: { opening: 0, purchases: 300, consumedAHL: 0, consumedALC: 20, consumedShared: 0, closing: 280, closingValue: 3500, businessUnit: "AHL" },
   };
   for (const k of Object.keys(want)) for (const f of Object.keys(want[k])) eq(row(products[k].id)?.[f], want[k][f], `${k}.${f}`);
 });
