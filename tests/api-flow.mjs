@@ -27,19 +27,23 @@ async function raw(body, sigOverride) {
   const t0 = Date.now();
   // Google sometimes answers with an HTML error page (right after a deploy). The script never ran in
   // that case, so retrying is safe, exactly as src/lib/api.ts explains.
-  let j;
-  for (let attempt = 1; ; attempt++) {
+  let j, text, attempt;
+  for (attempt = 1; ; attempt++) {
     const r = await fetch(u, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body, redirect: "follow", signal: AbortSignal.timeout(90_000) });
-    const text = await r.text();
+    text = await r.text();
     try { j = JSON.parse(text); break; }
     catch { if (attempt >= 3) throw new Error("Apps Script returned a non-JSON page 3 times"); await new Promise((res) => setTimeout(res, 3000)); }
   }
-  return { ok: j.success === true, error: j.error, message: j.message, data: j.data, secs: (Date.now() - t0) / 1000 };
+  return { ok: j.success === true, error: j.error, message: j.message, data: j.data, secs: (Date.now() - t0) / 1000, attempts: attempt, raw: text.slice(0, 300) };
 }
 const READ = /\.(read|list)$/;
-function call(actor, action, data = {}, opId) {
+async function call(actor, action, data = {}, opId) {
   const d = READ.test(action) ? data : { ...data, operationId: opId || crypto.randomUUID() };
-  return raw(JSON.stringify({ action, actor, data: d }));
+  const body = JSON.stringify({ action, actor, data: d });
+  const r = await raw(body);
+  // Rarely, on a slow call, Google returns success without the result body (seen ~1 in 60 calls).
+  // The write itself is safe: resending the same operation id returns the stored result, never a second write.
+  return r.ok && r.data === undefined ? raw(body) : r;
 }
 
 let pass = 0, fail = 0;
@@ -50,7 +54,11 @@ async function t(name, fn) {
   catch (e) { fail++; failures.push(name); console.log("FAIL", name, "->", e.message); }
 }
 const eq = (a, b, what) => { if (a !== b) throw new Error(`${what}: got ${JSON.stringify(a)}, expected ${JSON.stringify(b)}`); };
-const okRes = (r, what = "call") => { if (!r.ok) throw new Error(`${what} failed: ${r.error} ${r.message}`); return r.data; };
+const okRes = (r, what = "call") => {
+  if (!r.ok) throw new Error(`${what} failed: ${r.error} ${r.message}`);
+  if (r.data === undefined) throw new Error(`${what} succeeded but returned no data: ${JSON.stringify(r)}`);
+  return r.data;
+};
 const rejected = (r, code, what = "call") => { if (r.ok) throw new Error(`${what} should have been rejected with ${code}`); eq(r.error, code, what + " error code"); };
 const timed = (r) => { if (r.secs > 20) slow.push(r.secs.toFixed(1) + "s"); return r; };
 
