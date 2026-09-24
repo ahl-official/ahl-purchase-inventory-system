@@ -13,9 +13,7 @@
 function processStockIssue(payload) {
   var req = payload.data;
   var actorRole = appRole((getUser(payload.actor) || {}).Role);
-  var expectedLocation = actorRole === "PurchaseCoordinator" ?
-    getConfig("HeadOfficeLocationID", "LOC-01") :
-    getConfig("SalonFloorLocationID", "LOC-02");
+  var expectedLocation = actorLocation(payload.actor);
   var locationId = req.fromLocationId || expectedLocation;
 
   if (actorRole !== "Admin" && locationId !== expectedLocation) {
@@ -69,7 +67,7 @@ function processStockIssue(payload) {
       CategoryID: split.categoryId || "",
       PersonID: split.recipientUserId || "",
       HandoverID: handoverId,
-      Amount: qty * ((Number(product.Cost) || 0) / (Number(product.ConvFactor) || 1)),
+      Amount: qty * (Number(product.Cost) || 0),
       Actor: payload.actor,
       Status: "ISSUED",
       Notes: split.notes || ""
@@ -148,7 +146,7 @@ function processStockReceive(payload) {
 
   // Deliveries arrive in the purchase unit; the ledger stores issue units.
   var qtyBase = toBaseQty(product, qty, true);
-  var amount = Number(req.amount) || qty * (Number(product.Cost) || 0);
+  var amount = Number(req.amount) || qtyBase * (Number(product.Cost) || 0);
 
   appendRecord("LEDGER", {
     TxnID: txnId,
@@ -383,10 +381,15 @@ function processStockHandover(payload) {
 
   var fromLocationId = req.fromLocationId || getConfig("HeadOfficeLocationID", "LOC-01");
   var toLocationId = req.toLocationId || getConfig("SalonFloorLocationID", "LOC-02");
-  if(fromLocationId!==getConfig('HeadOfficeLocationID','LOC-01') || toLocationId!==getConfig('SalonFloorLocationID','LOC-02')) throw new Error('FORBIDDEN: Handovers must go from Head Office to Salon Floor.');
+  var salonId = getConfig('SalonFloorLocationID','LOC-02');
+  if(fromLocationId!==getConfig('HeadOfficeLocationID','LOC-01')) throw new Error('FORBIDDEN: Handovers must start at Head Office.');
+  // A destination is any active studio with a city (Khar, Delhi, Bangalore...).
+  var destination=readAll('LISTS').filter(function(v){return v.Type==='LOCATION' && v.Code===toLocationId && isTruthy(v.Active) && v.Extra;})[0];
+  if(!destination || toLocationId===fromLocationId) throw new Error('VALIDATION: Choose an active destination studio.');
   positiveQuantity(qty,product,false);
   var receiver=findRecord('PEOPLE','UserID',req.toUserId);
-  if(!receiver || !isTruthy(receiver.Active) || appRole(receiver.Role)!=='ProductDistributor') throw new Error('VALIDATION: Select a Salon Floor receiver.');
+  if(!receiver || !isTruthy(receiver.Active) || appRole(receiver.Role)!=='ProductDistributor') throw new Error('VALIDATION: Select a receiver.');
+  if(toLocationId!==salonId && String(receiver.LocationID).trim()!==toLocationId) throw new Error('VALIDATION: Select a receiver based at '+destination.Name+'.');
 
   // Pending handovers reserve stock but do not move custody until Hitesh's
   // recount. This prevents the same Receiving stock being promised twice.
@@ -525,10 +528,20 @@ function processConfirmHandover(payload) {
 
 // ---------------------------------------------------------- opening stock
 
+/** The stock location a person works from. Head Office for the purchase coordinator, otherwise their own studio. */
+function actorLocation(actor) {
+  var user = getUser(actor) || {}, ho = getConfig("HeadOfficeLocationID", "LOC-01");
+  if (appRole(user.Role) === "PurchaseCoordinator") return ho;
+  var loc = String(user.LocationID || "").trim();
+  var known = readAll("LISTS").some(function (v) { return v.Type === "LOCATION" && v.Code === loc && isTruthy(v.Active) && v.Extra; });
+  // A distributor tagged with Head Office keeps the Salon Floor default, as before.
+  return known && loc !== ho ? loc : getConfig("SalonFloorLocationID", "LOC-02");
+}
+
 function openingLocationForActor(actor, requestedLocationId) {
   var role = appRole((getUser(actor) || {}).Role);
   if (role === "PurchaseCoordinator") return getConfig("HeadOfficeLocationID", "LOC-01");
-  if (role === "ProductDistributor") return getConfig("SalonFloorLocationID", "LOC-02");
+  if (role === "ProductDistributor") return actorLocation(actor);
   if (role === "Admin" && requestedLocationId) return String(requestedLocationId);
   throw new Error("FORBIDDEN: Your account cannot submit an opening stock count.");
 }
@@ -728,7 +741,7 @@ function processAssetStatus(payload) {
  * Ledger, requests and vendor-rate tabs are append-only, so "most recent
  * first" is just "read from the end" -- no date parsing needed.
  */
-function getDashboard() {
+function getDashboard(payload) {
   var receivingLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
   var custodyLocationId = getConfig("SalonFloorLocationID", "LOC-02");
 
@@ -739,7 +752,16 @@ function getDashboard() {
   // rereading it for every product makes the dashboard unusably slow.
   var ledgerRows = readAll("LEDGER");
 
+  var stockLocations = readAll("LISTS").filter(function (v) {
+    return v.Type === "LOCATION" && isTruthy(v.Active) && v.Extra;
+  }).map(function (v) { return v.Code; });
+
   var stock = products.map(function (p) {
+    var locationBalances = {};
+    stockLocations.forEach(function (code) {
+      locationBalances[code] = computeBalanceFromRows(ledgerRows, p.ProductID, code) -
+        computePendingHandoverOutFromRows(ledgerRows, p.ProductID, code);
+    });
     var receiving = computeBalanceFromRows(ledgerRows, p.ProductID, receivingLocationId);
     var custody = computeBalanceFromRows(ledgerRows, p.ProductID, custodyLocationId);
     var pendingOut = computePendingHandoverOutFromRows(
@@ -766,6 +788,7 @@ function getDashboard() {
       receivingBalance: receiving,
       receivingAvailable: receiving - pendingOut,
       custodyBalance: custody,
+      locationBalances: locationBalances,
       headOfficeBalance: receiving,
       headOfficeAvailable: receiving - pendingOut,
       salonFloorBalance: custody,
@@ -848,7 +871,7 @@ function getDashboard() {
 
   return {
     stock: stock,
-    pendingHandovers: listPendingHandovers(),
+    pendingHandovers: listPendingHandovers(payload),
     openRequests: openRequests,
     recentActivity: recentActivity,
     vendorRates: vendorRates,

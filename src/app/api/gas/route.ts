@@ -24,6 +24,8 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "order.cancel": ["PurchaseCoordinator", "Admin"],
   "handover.cancel": ["PurchaseCoordinator", "Admin"],
   "stock.adjust": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "product.create": ["PurchaseCoordinator", "Admin"],
+  "inventoryReport.read": ["PurchaseCoordinator", "Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the

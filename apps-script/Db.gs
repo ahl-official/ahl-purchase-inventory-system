@@ -16,8 +16,21 @@ function getDbId() {
   return (fromProps && fromProps.trim()) || TARGET_SHEET_ID;
 }
 
+/**
+ * Per-request memo, switched on only by doPost. Opening the spreadsheet and
+ * reading headers on every readAll made a single request take 5-25 seconds.
+ * Admin functions run from the editor (setup, upgrades) stay uncached because
+ * they change tabs and headers mid-run.
+ */
+var REQUEST_MEMO = false;
+var MEMO_DB = null;
+var MEMO_TABLES = {};
+/** Row cache, enabled by doPost for read-only requests only (no writes can make it stale). */
+var MEMO_ROWS = null;
+
 function db() {
-  return SpreadsheetApp.openById(getDbId());
+  if (!REQUEST_MEMO) return SpreadsheetApp.openById(getDbId());
+  return MEMO_DB || (MEMO_DB = SpreadsheetApp.openById(getDbId()));
 }
 
 /**
@@ -25,6 +38,7 @@ function db() {
  * @return {{sheet: Sheet, headers: string[], idx: Object}}
  */
 function table(name) {
+  if (REQUEST_MEMO && MEMO_TABLES[name]) return MEMO_TABLES[name];
   var sheet = db().getSheetByName(name);
   if (!sheet) {
     throw new Error(
@@ -46,11 +60,14 @@ function table(name) {
     if (h) idx[h] = i;
   });
 
-  return { sheet: sheet, headers: headers, idx: idx };
+  var resolved = { sheet: sheet, headers: headers, idx: idx };
+  if (REQUEST_MEMO) MEMO_TABLES[name] = resolved;
+  return resolved;
 }
 
 /** Every data row of a tab as plain objects keyed by header name. */
 function readAll(name) {
+  if (MEMO_ROWS && MEMO_ROWS[name]) return MEMO_ROWS[name];
   var t = table(name);
   if (t.sheet.getLastRow() < 2) return [];
 
@@ -58,13 +75,15 @@ function readAll(name) {
     .getRange(2, 1, t.sheet.getLastRow() - 1, t.headers.length)
     .getValues();
 
-  return values.map(function (row) {
+  var rows = values.map(function (row) {
     var record = {};
     t.headers.forEach(function (h, i) {
       if (h) record[h] = row[i];
     });
     return record;
   });
+  if (MEMO_ROWS) MEMO_ROWS[name] = rows;
+  return rows;
 }
 
 /**

@@ -232,3 +232,27 @@
     background-size: 1rem;
   }
 }
+
+/*
+  Printing a QR label sheet: hide everything except the label grid, which
+  opts in via #qr-print-sheet. Scoped to an id rather than app-shell classes
+  so no other screen has to know printing exists.
+*/
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #qr-print-sheet,
+  #qr-print-sheet * {
+    visibility: visible;
+  }
+  #qr-print-sheet {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+  }
+  .qr-label {
+    break-inside: avoid;
+  }
+}

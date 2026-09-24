@@ -24,6 +24,8 @@ export type AppsScriptAction =
   | "order.cancel"
   | "handover.cancel"
   | "stock.adjust"
+  | "product.create"
+  | "inventoryReport.read"
   | "auth.login"
   | "stock.issue"
   | "stock.receive"

@@ -110,7 +110,95 @@ function processStockAdjustment(payload) {
   return {txnId:id};
 }
 
+/**
+ * PRODUCTS.ProductType has a strict dropdown that predates "Both"; a script write of a value it
+ * does not list is silently dropped. Widen it once so new Both products keep their type.
+ */
+function allowBothProductType() {
+  var t = table('PRODUCTS'), col = t.idx.ProductType + 1, sheet = t.sheet;
+  var range = sheet.getRange(2, col, Math.max(sheet.getMaxRows() - 1, 1), 1);
+  var rule = range.getCell(1, 1).getDataValidation();
+  if (!rule) return;
+  var list = rule.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST ? rule.getCriteriaValues()[0] : [];
+  if (list.indexOf('Both') >= 0) return;
+  range.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['Consumable', 'Retail', 'Both', 'Furniture'], true).setAllowInvalid(false).build());
+}
+
+/** Purchase coordinator adds a product; runs inside the doPost lock, so the next-ID and duplicate checks cannot race. */
+function processProductCreate(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  var r=payload.data || {}, name=String(r.name || '').replace(/\s+/g,' ').trim();
+  var norm=function(s){return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'');};
+  var uom=function(v,label){var u=String(v || '').trim().toUpperCase();if(!/^[A-Z]{1,10}$/.test(u)) throw new Error('VALIDATION: Choose the '+label+'.');return u;};
+  if(name.length<3 || name.length>120) throw new Error('VALIDATION: Enter the product name (3-120 characters).');
+  if(['Consumable','Retail','Both'].indexOf(r.productType)<0) throw new Error('VALIDATION: Choose Consumable, Retail or Both.');
+  var purchaseUom=uom(r.purchaseUom,'purchase unit'), issueUom=uom(r.issueUom,'stock unit'), conv=Number(r.convFactor);
+  if(!isFinite(conv) || conv<=0) throw new Error('VALIDATION: Enter how much stock one purchase unit contains.');
+  if(purchaseUom===issueUom && conv!==1) throw new Error('VALIDATION: Same purchase and stock unit must contain exactly 1.');
+  var lists=readAll('LISTS'), has=function(type,code){return lists.some(function(v){return v.Type===type && v.Code===code && isTruthy(v.Active);});};
+  if(!has('CATEGORY',r.categoryId)) throw new Error('VALIDATION: Choose the product category.');
+  var cost=Number(r.cost);
+  if(r.cost==='' || r.cost==null || !isFinite(cost) || cost<0) throw new Error('VALIDATION: Enter the cost per '+issueUom+'.');
+  var gst=Number(r.gstPercent || 0), reorder=Number(r.reorderLevel || 0);
+  if(!isFinite(gst) || gst<0 || gst>28) throw new Error('VALIDATION: GST must be between 0 and 28.');
+  if(!isFinite(reorder) || reorder<0) throw new Error('VALIDATION: Reorder level cannot be negative.');
+  if(r.vendorId && !has('VENDOR',r.vendorId)) throw new Error('VALIDATION: Choose a listed supplier.');
+  var rows=readAll('PRODUCTS');
+  if(rows.some(function(p){return norm(p.Name)===norm(name);})) throw new Error('DUPLICATE: This product already exists.');
+  allowBothProductType();
+  var max=rows.reduce(function(m,p){var n=/^PRD-(\d+)$/.exec(String(p.ProductID));return n?Math.max(m,Number(n[1])):m;},0);
+  var id='PRD-'+('0000'+(max+1)).slice(-4);
+  appendRecord('PRODUCTS',{ProductID:id,Name:name,CategoryID:r.categoryId,IssueUOM:issueUom,PurchaseUOM:purchaseUom,ConvFactor:conv,Cost:cost,GSTPercent:gst/100,VendorID:r.vendorId || '',ReorderLevel:reorder,Active:true,Notes:String(r.brand || '').trim() ? 'Brand: '+String(r.brand).trim() : '',ProductType:r.productType});
+  audit(payload.actor,'product.create',id,r);
+  return {productId:id,name:name};
+}
+
+/**
+ * Monthly rows for finance's Inventory tab: one row per city x product.
+ * Ledger-derived; a city is the sum of its locations, so Head Office -> Salon
+ * handovers inside a city net to zero. Cost is per stock unit.
+ */
+function getInventoryReport(payload) {
+  var tz=Session.getScriptTimeZone(), month=String((payload.data || {}).month || '') || Utilities.formatDate(new Date(),tz,'yyyy-MM');
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('VALIDATION: Choose a month.');
+  var lists=readAll('LISTS'), city={}, cat={}, prod={}, issueCategory={};
+  lists.forEach(function(l){if(l.Type==='LOCATION' && l.Extra) city[l.Code]=String(l.Extra); if(l.Type==='CATEGORY') cat[l.Code]={name:l.Name,unit:String(l.Extra || '')};});
+  readAll('PRODUCTS').forEach(function(p){prod[p.ProductID]=p;});
+  var ledger=readAll('LEDGER');
+  ledger.forEach(function(l){if(l.Type==='ISSUE') issueCategory[l.TxnID]=l.CategoryID;});
+  var bucket=function(categoryId){var u=(cat[categoryId] || {}).unit;return u==='AHL'?'ahl':u==='Alchemane'?'alc':'shared';};
+  var handoverCities={};
+  ledger.forEach(function(l){
+    if(l.Type!=='HANDOVER' || l.Status==='VOID' || l.Status==='PENDING_CONFIRM' || !city[l.LocationID]) return;
+    (handoverCities[l.HandoverID] || (handoverCities[l.HandoverID]={}))[city[l.LocationID]]=true;
+  });
+  var crossCity=function(id){return Object.keys(handoverCities[id] || {}).length>1;};
+  var out={};
+  ledger.forEach(function(l){
+    if(l.Status==='VOID' || l.Status==='PENDING_CONFIRM' || !prod[l.ProductID] || !city[l.LocationID] || !l.Date) return;
+    var m=Utilities.formatDate(new Date(l.Date),tz,'yyyy-MM');
+    if(m>month) return;
+    var key=city[l.LocationID]+'|'+l.ProductID;
+    var r=out[key] || (out[key]={city:city[l.LocationID],productId:l.ProductID,opening:0,purchases:0,tin:0,tout:0,ahl:0,alc:0,shared:0,adjustments:0,closing:0});
+    var q=(Number(l.QtyBase) || 0)*(Number(l.Direction) || 0);
+    r.closing+=q;
+    if(m<month || l.Type==='OPENING') r.opening+=q;
+    else if(l.Type==='RECEIPT') r.purchases+=q;
+    else if(l.Type==='ISSUE') r[bucket(l.CategoryID)]-=q;
+    else if(l.Type==='RETURN') r[bucket(issueCategory[l.PORef])]-=q;
+    else if(l.Type==='HANDOVER'){if(crossCity(l.HandoverID)){if(q>0) r.tin+=q; else r.tout-=q;}}
+    else r.adjustments+=q;
+  });
+  var round=function(n){return Math.round(n*1000)/1000;};
+  var rows=Object.keys(out).map(function(k){
+    var r=out[k], p=prod[r.productId], c=cat[p.CategoryID] || {name:'',unit:''}, cost=Number(p.Cost) || 0;
+    return {month:month,city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
+  }).filter(function(r){return r.opening||r.purchases||r.transferIn||r.transferOut||r.consumedAHL||r.consumedALC||r.consumedShared||r.adjustments||r.closing;});
+  rows.sort(function(a,b){return (a.city+a.category+a.product).localeCompare(b.city+b.category+b.product);});
+  return {month:month,rows:rows};
+}
+
 function getOperations(payload) {
-  var dashboard=getDashboard();
-  return { catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:readAll('LEDGER').slice(-500).reverse().map(function(r){return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || ''};}) };
+  var dashboard=getDashboard(payload);
+  return { myLocationId:actorLocation(payload.actor), catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:readAll('LEDGER').slice(-500).reverse().map(function(r){return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || ''};}) };
 }

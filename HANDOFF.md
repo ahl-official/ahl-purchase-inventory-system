@@ -1,6 +1,6 @@
 # AHL Flow — Handoff
 
-**Status as of 29 Aug 2026.** Supersedes `CLAUDE_HANDOFF.md`, which describes a
+**Status as of 29 Aug 2026 (see `AI_PROJECT_GUIDE.md` for the current state).** The old `CLAUDE_HANDOFF.md` described a
 database schema that does not exist. Do not build against that file.
 
 Inventory, purchase requests and goods receipt for American Hair Line — a hair

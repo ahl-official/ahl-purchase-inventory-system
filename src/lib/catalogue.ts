@@ -8,6 +8,6 @@ export interface Catalogue { products:Product[]; people:Person[]; categories:Loo
 export const EMPTY_CATALOGUE: Catalogue = { products:[],people:[],categories:[],vendors:[],locations:[],headOfficeLocationId:'LOC-01',salonFloorLocationId:'LOC-02',approvalThreshold:5000 };
 export function useCatalogue() {
   const [catalogue,setCatalogue]=useState(EMPTY_CATALOGUE);
-  useEffect(()=>{let active=true; void postAction<Catalogue>('catalogue.read',{}).then(r=>{if(active && r.ok)setCatalogue(r.data);});return()=>{active=false;};},[]);
+  useEffect(()=>{let active=true; void postAction<Catalogue>('catalogue.read',{}).then(r=>{if(active && r.ok && r.data)setCatalogue(r.data);});return()=>{active=false;};},[]);
   return catalogue;
 }

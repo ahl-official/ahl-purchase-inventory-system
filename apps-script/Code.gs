@@ -6,6 +6,7 @@
  */
 function doPost(e) {
   var payload = null;
+  REQUEST_MEMO = true;
 
   try {
     if (!e || !e.postData || !e.postData.contents) {
@@ -46,8 +47,12 @@ function doPost(e) {
 
     // Serialise every write. Hitesh issuing while Satvik receives must not
     // interleave, or the balance recomputed inside each handler is meaningless.
+    // Only writes take the lock. Reads never modify the sheet, and queueing
+    // them behind writes (and behind each other) made screens time out.
     var lock = LockService.getScriptLock();
-    if (!lock.tryLock(30000)) {
+    var needsLock = !/\.(read|list)$/.test(String(payload.action));
+    if (!needsLock) MEMO_ROWS = {};
+    if (needsLock && !lock.tryLock(30000)) {
       return respondJson(
         { success: false, error: "BUSY", message: "System busy, please try again." },
         429
@@ -74,7 +79,9 @@ function doPost(e) {
         'catalogue.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'order.create':['PurchaseCoordinator','Admin'], 'order.cancel':['PurchaseCoordinator','Admin'],
         'handover.cancel':['PurchaseCoordinator','Admin'],
-        'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin']
+        'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'product.create':['PurchaseCoordinator','Admin'],
+        'inventoryReport.read':['PurchaseCoordinator','Admin']
       };
       if(payload.action !== 'auth.login') {
         if(!roles[payload.action]) throw new Error('UNKNOWN_ACTION: Unsupported action.');
@@ -102,6 +109,8 @@ function doPost(e) {
         case 'order.cancel': result=processOrderCancel(payload); break;
         case 'handover.cancel': result=processHandoverCancel(payload); break;
         case 'stock.adjust': result=processStockAdjustment(payload); break;
+        case 'product.create': result=processProductCreate(payload); break;
+        case 'inventoryReport.read': result=getInventoryReport(payload); break;
         case "auth.login":
           result = processAuthLogin(payload);
           break;
@@ -145,7 +154,7 @@ function doPost(e) {
           result = processAssetStatus(payload);
           break;
         case "dashboard.read":
-          result = getDashboard();
+          result = getDashboard(payload);
           break;
         default:
           return respondJson(
@@ -180,7 +189,7 @@ function doPost(e) {
         422
       );
     } finally {
-      lock.releaseLock();
+      if (needsLock) lock.releaseLock();
     }
   } catch (err) {
     console.error(err);

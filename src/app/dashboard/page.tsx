@@ -16,6 +16,7 @@ import {
 import { postAction } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useCatalogue } from '@/lib/catalogue';
+import { downloadCsv } from '@/lib/csv';
 
 interface StockRow {
   productId: string;
@@ -114,12 +115,8 @@ const STATUS_TONE: Record<string, string> = {
   OPEN: "border-border text-muted-foreground",
 };
 
-function csvCell(value: unknown) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
-}
-
 export default function DashboardPage() {
-  const { categories: MOCK_CATEGORIES, people: MOCK_USERS } = useCatalogue();
+  const { categories: categoryList, people: peopleList } = useCatalogue();
   const [data, setData] = useState<DashboardData | null>(null);
   const [dataSource, setDataSource] = useState<"demo" | "live">("demo");
   const [loading, setLoading] = useState(false);
@@ -188,19 +185,13 @@ export default function DashboardPage() {
       row.direction,
       row.qty,
       row.uom,
-      MOCK_CATEGORIES.find((item) => item.id === row.categoryId)?.name ?? row.categoryId,
-      MOCK_USERS.find((item) => item.id === row.personId)?.name ?? row.personId,
+      categoryList.find((item) => item.id === row.categoryId)?.name ?? row.categoryId,
+      peopleList.find((item) => item.id === row.personId)?.name ?? row.personId,
       row.actor,
       row.status,
       row.notes,
     ]);
-    const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
-    const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `ahl-stock-activity-${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsv([headers, ...rows], `ahl-stock-activity-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
   return (
@@ -307,7 +298,7 @@ export default function DashboardPage() {
                 onChange={(event) => setCategoryFilter(event.target.value)}
               >
                 <option value="">All categories</option>
-                {MOCK_CATEGORIES.map((category) => (
+                {categoryList.map((category) => (
                   <option key={category.id} value={category.id}>{category.name}</option>
                 ))}
               </Select>
@@ -332,7 +323,7 @@ export default function DashboardPage() {
                 </TableHeader>
                 <TableBody>
                   {stock.map((s) => {
-                    const category = MOCK_CATEGORIES.find((c) => c.id === s.categoryId);
+                    const category = categoryList.find((c) => c.id === s.categoryId);
                     return (
                       <TableRow key={s.productId}>
                         <TableCell className="whitespace-normal">
@@ -466,8 +457,8 @@ export default function DashboardPage() {
               ) : (
                 <ul className="max-h-96 divide-y divide-border overflow-y-auto">
                   {activity.map((a) => {
-                    const category = MOCK_CATEGORIES.find((item) => item.id === a.categoryId);
-                    const person = MOCK_USERS.find((item) => item.id === a.personId);
+                    const category = categoryList.find((item) => item.id === a.categoryId);
+                    const person = peopleList.find((item) => item.id === a.personId);
                     return (
                     <li key={a.txnId} className="px-5 py-3">
                       <div className="flex items-center justify-between gap-3">
