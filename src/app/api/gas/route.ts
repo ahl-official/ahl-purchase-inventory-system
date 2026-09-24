@@ -39,9 +39,6 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "opening.submit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.approve": ["Admin"],
-  "asset.issue": ["PurchaseCoordinator", "Admin"],
-  "asset.list": ["PurchaseCoordinator", "Admin"],
-  "asset.status": ["PurchaseCoordinator", "Admin"],
   "dashboard.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 

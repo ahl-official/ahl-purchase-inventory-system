@@ -37,9 +37,6 @@ export type AppsScriptAction =
   | "opening.submit"
   | "opening.list"
   | "opening.approve"
-  | "asset.issue"
-  | "asset.list"
-  | "asset.status"
   | "dashboard.read";
 
 export interface AppsScriptPayload<T = unknown> {

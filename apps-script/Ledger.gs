@@ -33,9 +33,6 @@ function processStockIssue(payload) {
 
   var product = getProduct(req.productId);
   if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
-  if (String(product.ProductType).trim().toLowerCase() === "furniture") {
-    throw new Error("VALIDATION: Furniture must be assigned through the In Use workflow.");
-  }
 
   // Re-check the balance inside the lock. The figure the browser showed may be
   // stale by the time it reaches here.
@@ -661,87 +658,6 @@ function processOpeningStockApprove(payload) {
   return { countId: req.countId, status: status };
 }
 
-// ---------------------------------------------------------- assets in use
-
-function processAssetIssue(payload) {
-  var req = payload.data || {};
-  var product = getProduct(req.productId);
-  if (!product) throw new Error("UNKNOWN_PRODUCT: Select a valid product.");
-  if (String(product.ProductType).trim().toLowerCase() !== "furniture") {
-    throw new Error("VALIDATION: Only Furniture products use the In Use workflow.");
-  }
-  var qty = Number(req.qty);
-  if (!qty || qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
-  if (!String(req.assignedTo || "").trim()) throw new Error("VALIDATION: Record who or where will use the asset.");
-
-  var locationId = getConfig("HeadOfficeLocationID", "LOC-01");
-  var available = computeAvailableBalance(req.productId, locationId);
-  if (qty > available) throw new Error("INSUFFICIENT_STOCK: Only " + available + " available at Head Office.");
-
-  var assignmentId = nextId("AST");
-  appendRecord("LEDGER", {
-    TxnID: nextId("TXN"), Date: new Date(), Type: "ASSET_IN_USE", Direction: -1,
-    ProductID: req.productId, Qty: qty, UOM: product.IssueUOM, QtyBase: toBaseQty(product, qty, false),
-    LocationID: locationId, CategoryID: req.categoryId || "CAT-15",
-    PersonID: req.assignedTo, HandoverID: assignmentId, Actor: payload.actor,
-    Status: "IN_USE", Notes: req.notes || ""
-  });
-  audit(payload.actor, "asset.issue", assignmentId, { productId: req.productId, qty: qty, assignedTo: req.assignedTo });
-  return { assignmentId: assignmentId, status: "IN_USE", newBalance: available - qty };
-}
-
-function listAssetsInUse() {
-  return readAll("LEDGER").filter(function (row) {
-    return String(row.Type).toUpperCase() === "ASSET_IN_USE" && String(row.Status).toUpperCase() === "IN_USE";
-  }).map(function (row) {
-    var product = getProduct(row.ProductID);
-    return { assignmentId: row.HandoverID, productId: row.ProductID,
-      productName: product ? product.Name : row.ProductID, qty: Number(row.Qty) || 0,
-      uom: row.UOM, assignedTo: row.PersonID, date: row.Date, notes: row.Notes || "" };
-  }).reverse();
-}
-
-function processAssetStatus(payload) {
-  var req = payload.data || {};
-  var nextStatus = String(req.status || "").toUpperCase();
-  if (["RETURNED", "DAMAGED", "LOST", "DISPOSED"].indexOf(nextStatus) === -1) {
-    throw new Error("VALIDATION: Choose Returned, Damaged, Lost or Disposed.");
-  }
-  var t = table("LEDGER");
-  var values = t.sheet.getLastRow() < 2 ? [] : t.sheet.getRange(2, 1, t.sheet.getLastRow() - 1, t.headers.length).getValues();
-  var rowIndex = -1;
-  var source = null;
-  for (var i = 0; i < values.length; i++) {
-    if (String(values[i][t.idx.HandoverID]) === String(req.assignmentId) &&
-        String(values[i][t.idx.Type]).toUpperCase() === "ASSET_IN_USE" &&
-        String(values[i][t.idx.Status]).toUpperCase() === "IN_USE") {
-      rowIndex = i + 2; source = values[i]; break;
-    }
-  }
-  if (!source) throw new Error("NOT_FOUND: Active asset assignment not found.");
-  if (nextStatus === "RETURNED") {
-    // Append the restoring movement only once. If a prior call wrote the
-    // ledger row but timed out before changing the source status, retrying is
-    // safe and will not add the stock twice.
-    var returnAlreadyPosted = readAll("LEDGER").some(function (row) {
-      return String(row.Type).toUpperCase() === "ASSET_RETURN" &&
-        String(row.HandoverID) === String(req.assignmentId);
-    });
-    if (!returnAlreadyPosted) {
-      appendRecord("LEDGER", {
-        TxnID: nextId("TXN"), Date: new Date(), Type: "ASSET_RETURN", Direction: 1,
-        ProductID: source[t.idx.ProductID], Qty: source[t.idx.Qty], UOM: source[t.idx.UOM],
-        QtyBase: source[t.idx.QtyBase], LocationID: source[t.idx.LocationID],
-        PersonID: source[t.idx.PersonID], HandoverID: req.assignmentId,
-        Actor: payload.actor, Status: "RETURNED", Notes: req.notes || ""
-      });
-    }
-  }
-  t.sheet.getRange(rowIndex, t.idx.Status + 1).setValue(nextStatus);
-  audit(payload.actor, "asset." + nextStatus.toLowerCase(), req.assignmentId, { status: nextStatus });
-  return { assignmentId: req.assignmentId, status: nextStatus };
-}
-
 /**
  * Everything the shared dashboard needs in one call: live stock split by
  * custody, pending handovers, open requests (catalogue and new-product
@@ -885,8 +801,7 @@ function getDashboard(payload) {
     pendingHandovers: listPendingHandovers(payload),
     openRequests: openRequests,
     recentActivity: recentActivity,
-    vendorRates: vendorRates,
-    assetsInUse: listAssetsInUse()
+    vendorRates: vendorRates
   };
 }
 

@@ -234,25 +234,53 @@
 }
 
 /*
-  Printing a QR label sheet: hide everything except the label grid, which
-  opts in via #qr-print-sheet. Scoped to an id rather than app-shell classes
-  so no other screen has to know printing exists.
+  Printing a QR label sheet. The sheet is portalled into <body> as #qr-print-root, so printing hides every
+  other top-level element (display:none takes no space, so no blank pages). Each label has its own
+  size in millimetres, set inline, so different products can print at different sizes on one sheet.
 */
+#qr-print-root {
+  display: none;
+}
+.qr-label {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 1.5mm;
+  padding: 1.5mm;
+  border: 0.2mm solid #999;
+  overflow: hidden;
+  break-inside: avoid;
+}
+.qr-label img {
+  flex: none;
+  image-rendering: pixelated;
+}
+.qr-label-text {
+  min-width: 0;
+  line-height: 1.15;
+  color: #000;
+}
+.qr-label-text p {
+  margin: 0;
+}
+.qr-label-text p:first-child {
+  font-weight: 700;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 @media print {
-  body * {
-    visibility: hidden;
+  @page {
+    margin: 8mm;
   }
-  #qr-print-sheet,
-  #qr-print-sheet * {
-    visibility: visible;
+  body > *:not(#qr-print-root) {
+    display: none !important;
   }
-  #qr-print-sheet {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-  }
-  .qr-label {
-    break-inside: avoid;
+  #qr-print-root {
+    display: flex !important;
+    flex-wrap: wrap;
+    gap: 2mm;
+    align-items: flex-start;
   }
 }

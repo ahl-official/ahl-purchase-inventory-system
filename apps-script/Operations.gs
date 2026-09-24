@@ -121,7 +121,7 @@ function allowBothProductType() {
   if (!rule) return;
   var list = rule.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST ? rule.getCriteriaValues()[0] : [];
   if (list.indexOf('Both') >= 0) return;
-  range.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['Consumable', 'Retail', 'Both', 'Furniture'], true).setAllowInvalid(false).build());
+  range.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['Consumable', 'Retail', 'Both'], true).setAllowInvalid(false).build());
 }
 
 /** Purchase coordinator adds a product; runs inside the doPost lock, so the next-ID and duplicate checks cannot race. */
@@ -148,7 +148,7 @@ function processProductCreate(payload) {
   allowBothProductType();
   var max=rows.reduce(function(m,p){var n=/^PRD-(\d+)$/.exec(String(p.ProductID));return n?Math.max(m,Number(n[1])):m;},0);
   var id='PRD-'+('0000'+(max+1)).slice(-4);
-  appendRecord('PRODUCTS',{ProductID:id,Name:name,CategoryID:r.categoryId,IssueUOM:issueUom,PurchaseUOM:purchaseUom,ConvFactor:conv,Cost:cost,GSTPercent:gst/100,VendorID:r.vendorId || '',ReorderLevel:reorder,Active:true,Notes:String(r.brand || '').trim() ? 'Brand: '+String(r.brand).trim() : '',ProductType:r.productType});
+  appendRecord('PRODUCTS',{ProductID:id,Name:name,CategoryID:r.categoryId,IssueUOM:issueUom,PurchaseUOM:purchaseUom,ConvFactor:conv,Cost:cost,GSTPercent:gst/100,VendorID:r.vendorId || '',ReorderLevel:reorder,Active:true,Notes:[String(r.brand || '').trim() ? 'Brand: '+String(r.brand).trim() : '',String(r.notes || '').trim().slice(0,300)].filter(String).join(' | '),ProductType:r.productType});
   audit(payload.actor,'product.create',id,r);
   return {productId:id,name:name};
 }

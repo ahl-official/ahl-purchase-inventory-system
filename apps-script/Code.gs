@@ -72,8 +72,7 @@ function doPost(e) {
         'handover.list':['PurchaseCoordinator','ProductDistributor','Admin'],
         'opening.submit':['PurchaseCoordinator','ProductDistributor','Admin'],
         'opening.list':['PurchaseCoordinator','ProductDistributor','Admin'],
-        'opening.approve':['Admin'], 'asset.issue':['PurchaseCoordinator','Admin'],
-        'asset.list':['PurchaseCoordinator','Admin'], 'asset.status':['PurchaseCoordinator','Admin'],
+        'opening.approve':['Admin'],
         'dashboard.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'operations.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'catalogue.read':['PurchaseCoordinator','ProductDistributor','Admin'],
@@ -143,15 +142,6 @@ function doPost(e) {
           break;
         case "opening.approve":
           result = processOpeningStockApprove(payload);
-          break;
-        case "asset.issue":
-          result = processAssetIssue(payload);
-          break;
-        case "asset.list":
-          result = listAssetsInUse();
-          break;
-        case "asset.status":
-          result = processAssetStatus(payload);
           break;
         case "dashboard.read":
           result = getDashboard(payload);

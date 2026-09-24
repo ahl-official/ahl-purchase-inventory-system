@@ -80,21 +80,12 @@ interface VendorRateRow {
   date: string;
 }
 
-interface AssetAssignmentRow {
-  assignmentId: string;
-  productName: string;
-  qty: number;
-  uom: string;
-  assignedTo: string;
-}
-
 interface DashboardData {
   stock: StockRow[];
   pendingHandovers: PendingHandoverRow[];
   openRequests: OpenRequestRow[];
   recentActivity: ActivityRow[];
   vendorRates: VendorRateRow[];
-  assetsInUse: AssetAssignmentRow[];
 }
 
 function fmtDate(value: string) {
@@ -240,14 +231,6 @@ export default function DashboardPage() {
               </div>
               <p className="mt-2 text-2xl font-semibold tabular text-foreground">
                 {availableProductCount}
-              </p>
-            </div>
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                <Boxes className="size-4 text-brand" /> Assets In Use
-              </div>
-              <p className="mt-2 text-2xl font-semibold tabular text-foreground">
-                {data?.assetsInUse?.length ?? 0}
               </p>
             </div>
             <div className="rounded-xl border border-border bg-card p-4">

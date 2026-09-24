@@ -23,7 +23,6 @@ function inventoryViewDefinitions(headers) {
   var movement=[l('Date'),lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),l('Qty'),l('UOM'),lookup(l('LocationID'),'LISTS','Code','Name'),l('PersonID'),l('Type'),l('Status'),l('HandoverID'),l('Notes')];
   defs.HANDOVER_TRACKER={headers:['Date','Product Name','Qty','Unit','Destination','Receiver','Type','Status','Handover ID','Notes'],formulas:[filter(movement,[l('Type')+'="HANDOVER"',l('Direction')+'=1'])],dateColumns:[0]};
   defs.ISSUE_HISTORY={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,['('+l('Type')+'="ISSUE")+('+l('Type')+'="RETURN")+('+l('Type')+'="DAMAGE")'])],dateColumns:[0]};
-  defs.IN_USE={headers:['Date','Product Name','Qty','Unit','Location','Assigned To','Type','Status','Assignment ID','Notes'],formulas:[filter(movement,[l('Type')+'="ASSET_IN_USE"'])],dateColumns:[0]};
   defs.REPORTS={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,[l('TxnID')+'<>""'])],dateColumns:[0]};
   defs.PURCHASE_TRACKER={headers:['Order ID','Product Name','Vendor','Ordered','Received','Outstanding','Unit','Status','Date','Request ID'],formulas:[
     '=IFNA(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),"")',
