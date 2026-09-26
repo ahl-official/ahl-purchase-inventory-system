@@ -122,8 +122,8 @@ export async function callAppsScript<TResponse = unknown, TData = unknown>(
 ): Promise<ApiResult<TResponse>> {
   // Google occasionally answers a POST with the script's GET health page: "success" with no result.
   // The write may or may not have run, and resending the same operation id is safe (the backend returns
-  // the stored result), so retry once. Never report an empty reply as success.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // the stored result), so retry up to twice. Never report an empty reply as success.
+  for (let attempt = 0; attempt < 3; attempt++) {
     const result = await attemptCallAppsScript<TResponse, TData>(payload, options);
     if (!result.ok || result.data !== undefined) return result;
   }

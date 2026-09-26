@@ -43,7 +43,10 @@ async function call(actor, action, data = {}, opId) {
   const r = await raw(body);
   // Rarely, on a slow call, Google returns success without the result body (seen ~1 in 60 calls).
   // The write itself is safe: resending the same operation id returns the stored result, never a second write.
-  return r.ok && r.data === undefined ? raw(body) : r;
+  // Google sometimes returns its GET health page for a POST (about 1 in 30 slow calls): retry up to twice.
+  let out = r;
+  for (let i = 0; i < 2 && out.ok && out.data === undefined; i++) out = await raw(body);
+  return out;
 }
 
 let pass = 0, fail = 0;
@@ -215,6 +218,26 @@ await t("role and signature checks", async () => {
   const body = JSON.stringify({ action: "catalogue.read", actor: SATVIK, data: {} });
   rejected(await raw(body, "AAAA"), "FORBIDDEN", "bad signature");
   rejected(await call("nobody@example.com", "catalogue.read"), "NOT_IN_DIRECTORY");
+});
+
+await t("studio request reaches Satvik with requester and vendor picker data", async () => {
+  const cat = okRes(await call(SATVIK, "catalogue.read"), "catalogue.read");
+  const hitesh = cat.people.find((p) => p.role === "ProductDistributor" && p.locationId === "LOC-02") || cat.people.find((p) => p.role === "ProductDistributor");
+  eq(cat.vendors.length, 7, "active vendors");
+  const req = okRes(await call(HITESH, "purchase.request", { productId: A(), qty: 2, requestedByUserId: hitesh.id, source: "APP", notes: "salon stock low (test)" }), "purchase.request");
+  const ops = okRes(await call(SATVIK, "operations.read"), "operations.read");
+  eq(ops.dashboard.openRequests.find((r) => r.requestId === req.requestId)?.requestedBy, hitesh.id, "requester shown to Satvik");
+  const v = cat.vendors[0].id;
+  okRes(await call(SATVIK, "product.setVendor", { productId: A(), vendorId: v }), "setVendor");
+  rejected(await call(SATVIK, "product.setVendor", { productId: A(), vendorId: "VND-99" }), "VALIDATION", "unknown vendor");
+  rejected(await call(HITESH, "product.setVendor", { productId: A(), vendorId: v }), "FORBIDDEN", "salon role");
+  if (req.status === "PENDING_APPROVAL") {
+    rejected(await call(SATVIK, "order.create", { productId: A(), qty: 1, vendorId: v, requestId: req.requestId }), "VALIDATION", "order before approval");
+    okRes(await call(SATVIK, "purchase.approve", { requestId: req.requestId, decision: "APPROVE" }), "approve");
+  }
+  const o = okRes(await call(SATVIK, "order.create", { productId: A(), qty: 1, vendorId: v, requestId: req.requestId }), "order from request");
+  rejected(await call(SATVIK, "order.create", { productId: A(), qty: 1, vendorId: v, requestId: req.requestId }), "DUPLICATE", "second order on same request");
+  okRes(await call(SATVIK, "order.cancel", { orderId: o.orderId, notes: "test cleanup" }), "cancel");
 });
 
 console.log(`\n${pass} passed, ${fail} failed.${slow.length ? ` Slow calls (>20s): ${slow.join(", ")}` : ""}`);
