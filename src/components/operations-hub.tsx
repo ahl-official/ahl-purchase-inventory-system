@@ -6,13 +6,14 @@ import { AppShell, PageContainer } from './app-shell';
 import { Button } from './ui/button';
 import { Select, TextInput, Panel, StatusBanner } from './ui/field';
 import { PhotoCapture, type CapturedPhoto } from './photo-capture';
+import { ProductPicker } from './product-picker';
 import { QrScanner } from './qr-scanner';
 import { NewProductForm } from './new-product-form';
 import { QrLabels } from './qr-labels';
 import { MonthlyReport } from './monthly-report';
 import { postAction } from '@/lib/api-client';
 import { downloadCsv } from '@/lib/csv';
-import { EMPTY_CATALOGUE, groupProducts, type Catalogue } from '@/lib/catalogue';
+import { EMPTY_CATALOGUE, type Catalogue } from '@/lib/catalogue';
 import type { AppsScriptAction } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -70,7 +71,7 @@ export function OperationsHub({office}:{office:boolean}) {
 
 function StockForm({form,data,office,admin,busy,onSubmit,onClose}:{form:FormSpec;data:Data;office:boolean;admin:boolean;busy:boolean;onSubmit:(action:AppsScriptAction,data:object)=>Promise<boolean>;onClose?:()=>void}) {
   const c=data.catalogue,kind=form.kind;
-  const [productId,setProductId]=useState(form.productId||''),[qty,setQty]=useState(''),[person,setPerson]=useState(''),[category,setCategory]=useState(''),[businessUnit,setBusinessUnit]=useState(''),[vendor,setVendor]=useState(data.orders.find(o=>o.orderId===form.orderId)?.vendorId||''),[note,setNote]=useState(''),[search,setSearch]=useState(''),[makeMain,setMakeMain]=useState(false);
+  const [productId,setProductId]=useState(form.productId||''),[qty,setQty]=useState(''),[person,setPerson]=useState(''),[category,setCategory]=useState(''),[businessUnit,setBusinessUnit]=useState(''),[vendor,setVendor]=useState(data.orders.find(o=>o.orderId===form.orderId)?.vendorId||''),[note,setNote]=useState(''),[makeMain,setMakeMain]=useState(false);
   const [toLocation,setToLocation]=useState(c.salonFloorLocationId);
   const [source,setSource]=useState('APP'),[newName,setNewName]=useState(''),[approvedBy,setApprovedBy]=useState(''),[urgency,setUrgency]=useState('Normal'),[estimate,setEstimate]=useState(''),[correction,setCorrection]=useState('RETURN'),[sourceTxnId,setSourceTxnId]=useState('');
   const [invoice,setInvoice]=useState(''),[amount,setAmount]=useState(''),[photo,setPhoto]=useState<CapturedPhoto|null>(null),[productPhoto,setProductPhoto]=useState<CapturedPhoto|null>(null);
@@ -87,15 +88,14 @@ function StockForm({form,data,office,admin,busy,onSubmit,onClose}:{form:FormSpec
     if(kind==='handover')values={...common,toUserId:person,toLocationId:toLocation,requestId:form.requestId||''};
     if(kind==='issue')values={productId,fromLocationId:loc,splits:[{qty:Number(qty),recipientUserId:person,categoryId:category,businessUnit,notes:note}]};
     if(kind==='correction')values={...common,locationId:loc,kind:correction,sourceTxnId};
-    if(await onSubmit(action,values)){if(byVendor&&makeMain&&vendor)void postAction('product.setVendor',{productId,vendorId:vendor});setSearch('');setMakeMain(false);setQty('');setNote('');setProductId('');setBusinessUnit('');setPhoto(null);setProductPhoto(null);}
+    if(await onSubmit(action,values)){if(byVendor&&makeMain&&vendor)void postAction('product.setVendor',{productId,vendorId:vendor});setMakeMain(false);setQty('');setNote('');setProductId('');setBusinessUnit('');setPhoto(null);setProductPhoto(null);}
   };
   return <Panel><Section title={LABEL[kind]} description={kind==='issue'?`Deducts from ${office?'Head Office':'Salon Floor'} stock.`:kind==='order'?'Creating an order does not change available stock.':kind==='handover'?'Stock stays reserved at Head Office until the receiver at the studio counts and confirms.':kind==='receive'?'Enter only the quantity that actually arrived.':'Every movement keeps a reference and reason.'}/><form onSubmit={submit} className="p-5 sm:p-6"><fieldset disabled={busy} className="grid min-w-0 gap-5 sm:grid-cols-2 disabled:opacity-60">
     {(kind==='issue'||kind==='handover')&&scanning&&<div className="sm:col-span-2"><QrScanner onDecode={handleScan} onClose={()=>setScanning(false)}/></div>}
     {(kind==='issue'||kind==='handover')&&!scanning&&scanError&&<p className="rounded-xl bg-danger-subtle p-3 text-sm text-danger sm:col-span-2">{scanError}</p>}
     {kind==='handover'&&<Field title="Send to" wide><Select value={toLocation} onChange={e=>{setToLocation(e.target.value);setPerson('');}}>{studios.map(l=><option key={l.id} value={l.id}>{l.name} ({l.unit})</option>)}</Select></Field>}
     {['order','receive'].includes(kind)&&<Field title="Vendor" wide><Select required disabled={!!form.orderId} value={vendor} onChange={e=>{setVendor(e.target.value);setMakeMain(false);}}><option value="">Select vendor</option>{c.vendors.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</Select></Field>}
-    {(byVendor||kind==='request')&&!form.orderId&&<Field title="Search product" wide><TextInput value={search} onChange={e=>setSearch(e.target.value)} placeholder="Type a name; matches move to the top of the list"/></Field>}
-    <Field title="Product" wide><div className="flex gap-2"><Select required={!newName} value={productId} disabled={!!form.orderId||!!newName} onChange={e=>{setProductId(e.target.value);setScanError('');}}><option value="">Select product</option>{groupProducts(products,c.vendors,byVendor?vendor:'',search).map(g=><optgroup key={g.label} label={g.label}>{g.items.map(p=><option key={p.id} value={p.id}>{p.name} ({byVendor?p.purchaseUom:p.uom})</option>)}</optgroup>)}</Select>{(kind==='issue'||kind==='handover')&&!scanning&&<Button type="button" variant="outline" onClick={()=>{setScanning(true);setScanError('');}}><ScanLine className="size-4"/>Scan</Button>}</div></Field>
+    <Field title="Product" wide><div className="flex gap-2"><ProductPicker products={products} vendors={c.vendors} vendorId={byVendor?vendor:''} value={productId} required={!newName} disabled={!!form.orderId||!!newName} unitOf={p=>byVendor?p.purchaseUom:p.uom} onChange={id=>{setProductId(id);setScanError('');}}/>{(kind==='issue'||kind==='handover')&&!scanning&&<Button type="button" variant="outline" onClick={()=>{setScanning(true);setScanError('');}}><ScanLine className="size-4"/>Scan</Button>}</div></Field>
     {byVendor&&p&&vendor&&p.vendorId!==vendor&&<label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={makeMain} onChange={e=>setMakeMain(e.target.checked)}/>{p.vendorId?`Change main vendor of this product to ${c.vendors.find(v=>v.id===vendor)?.name}`:`Set ${c.vendors.find(v=>v.id===vendor)?.name} as main vendor of this product`}</label>}
     {kind==='request'&&<Field title="New product name (only if absent above)" wide><TextInput disabled={!!productId} value={newName} onChange={e=>setNewName(e.target.value)}/></Field>}
     {p&&['issue','handover'].includes(kind)&&<p className="rounded-xl bg-brand-subtle p-3 text-sm text-brand sm:col-span-2">Available: <strong>{available} {p.uom}</strong></p>}

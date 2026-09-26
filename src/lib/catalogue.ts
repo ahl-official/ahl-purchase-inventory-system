@@ -12,15 +12,16 @@ export function useCatalogue() {
   return catalogue;
 }
 
-/** Product picker order: typed matches first, then the chosen vendor's products, products with no vendor, other vendors. Nothing is hidden. */
+/** Product picker order: typing shows only matches (the vendor's first); otherwise the chosen vendor's products, products with no vendor, other vendors. Nothing is hidden. */
 export function groupProducts(products: Product[], vendors: Lookup[], vendorId: string, query: string) {
   const q = query.trim().toLowerCase(), vendor = vendors.find(v => v.id === vendorId);
+  if (q) { const hits = products.filter(p => p.name.toLowerCase().includes(q)); return hits.length ? [{ label: 'Results', items: [...hits.filter(p => p.vendorId === vendorId), ...hits.filter(p => p.vendorId !== vendorId)] }] : []; }
   const groups: { label: string; items: Product[] }[] = [
-    { label: 'Matches', items: [] }, { label: vendor ? `${vendor.name} products` : 'Products', items: [] },
+    { label: '', items: [] }, { label: vendor ? `${vendor.name} products` : 'Products', items: [] },
     { label: 'No vendor yet', items: [] }, { label: 'Other vendors', items: [] },
   ];
   for (const p of products) {
-    const i = q && p.name.toLowerCase().includes(q) ? 0 : !vendor || p.vendorId === vendorId ? 1 : !p.vendorId ? 2 : 3;
+    const i = !vendor || p.vendorId === vendorId ? 1 : !p.vendorId ? 2 : 3;
     groups[i].items.push(p);
   }
   return groups.filter(g => g.items.length);
