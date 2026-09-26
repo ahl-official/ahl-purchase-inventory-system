@@ -77,7 +77,7 @@ function StockForm({form,data,office,admin,busy,onSubmit,onClose}:{form:FormSpec
   const [invoice,setInvoice]=useState(''),[amount,setAmount]=useState(''),[photo,setPhoto]=useState<CapturedPhoto|null>(null),[productPhoto,setProductPhoto]=useState<CapturedPhoto|null>(null);
   const [scanning,setScanning]=useState(false),[scanError,setScanError]=useState('');
   const p=c.products.find(p=>p.id===productId),s=data.dashboard.stock.find(s=>s.productId===productId),loc=office?c.headOfficeLocationId:(data.myLocationId||c.salonFloorLocationId),available=(office?s?.headOfficeAvailable:(s?.locationBalances?.[loc]??s?.salonFloorBalance))||0;
-  const uom=kind==='receive'||kind==='order'?p?.purchaseUom:p?.uom,requiresPerson=['request','handover','issue'].includes(kind),people=c.people.filter(p=>kind!=='handover'||(p.role==='ProductDistributor'&&(toLocation===c.salonFloorLocationId||p.locationId===toLocation)));
+  const uom=kind==='receive'||kind==='order'?p?.purchaseUom:p?.uom,requiresPerson=['request','handover','issue'].includes(kind),people=c.people.filter(p=>kind==='issue'?p.role==='Technician':p.role==='Technician'?false:kind!=='handover'||(p.role==='ProductDistributor'&&(toLocation===c.salonFloorLocationId||p.locationId===toLocation)));
   const studios=c.locations.filter(l=>l.unit&&l.id!==c.headOfficeLocationId&&(l.id===c.salonFloorLocationId||c.people.some(p=>p.role==='ProductDistributor'&&p.locationId===l.id)));
   const products=c.products,byVendor=kind==='order'||kind==='receive';
   const handleScan=(code:string)=>{const match=products.find(p=>p.id===code);if(match){setProductId(match.id);setScanning(false);setScanError('');}else{setScanError("That code doesn't match a product you can issue.");}};
