@@ -51,7 +51,7 @@ export function NewProductForm({ catalogue, onCreated, onPrintLabel }: { catalog
         <span className="text-xs text-muted-foreground">Per stock unit, not per pack.{cost && !same && conv ? ` One ${purchaseUom} ≈ ₹${(Number(cost) * Number(conv)).toFixed(2)}.` : ''}</span></label>
       <label className="grid gap-2 text-sm">GST % (optional)<TextInput type="number" min="0" max="28" step="any" value={gst} onChange={e => setGst(e.target.value)} /></label>
       <label className="grid gap-2 text-sm">Reorder level, in {issueUom} (optional)<TextInput type="number" min="0" step="any" value={reorder} onChange={e => setReorder(e.target.value)} /></label>
-      <label className="grid gap-2 text-sm sm:col-span-2">Default supplier (optional)<Select value={vendorId} onChange={e => setVendorId(e.target.value)}><option value="">None</option>{catalogue.vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</Select></label>
+      <label className="grid gap-2 text-sm sm:col-span-2">Main vendor (optional)<Select value={vendorId} onChange={e => setVendorId(e.target.value)}><option value="">None</option>{catalogue.vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</Select></label>
       <div className="sm:col-span-2"><Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy}>{busy && <Loader2 className="size-4 animate-spin" />}Add product</Button></div>
     </form>
   </Panel>;

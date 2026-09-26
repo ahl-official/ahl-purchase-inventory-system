@@ -17,7 +17,7 @@ function getCatalogue() {
   function list(type) { return lists.filter(function (r) { return r.Type === type; }).map(function (r) { return { id:r.Code, name:r.Name, unit:r.Extra || '', dot:'bg-chart-1' }; }); }
   return {
     products: readAll('PRODUCTS').filter(function (r) { return isTruthy(r.Active); }).map(function (r) {
-      return { id:r.ProductID, name:r.Name, categoryId:r.CategoryID, productType:r.ProductType || 'Consumable', uom:r.IssueUOM, purchaseUom:r.PurchaseUOM, conversion:Number(r.ConvFactor) || 1, cost:Number(r.Cost) || 0, reorderLevel:Number(r.ReorderLevel) || 0, balance:null };
+      return { id:r.ProductID, name:r.Name, categoryId:r.CategoryID, productType:r.ProductType || 'Consumable', uom:r.IssueUOM, purchaseUom:r.PurchaseUOM, vendorId:r.VendorID || '', conversion:Number(r.ConvFactor) || 1, cost:Number(r.Cost) || 0, reorderLevel:Number(r.ReorderLevel) || 0, balance:null };
     }),
     // Explicit whitelist: never expose login or password fields.
     people: readAll('PEOPLE').filter(function (r) { return isTruthy(r.Active); }).map(function (r) { return { id:r.UserID, name:r.Name, role:appRole(r.Role) || r.Role, locationId:r.LocationID }; }),
@@ -194,7 +194,7 @@ function getInventoryReport(payload) {
   var round=function(n){return Math.round(n*1000)/1000;};
   var rows=Object.keys(out).map(function(k){
     var r=out[k], p=prod[r.productId], c=cat[p.CategoryID] || {name:'',unit:''}, cost=Number(p.Cost) || 0;
-    return {month:month,city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
+    return {month:month,type:p.ProductType || 'Consumable',city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
   }).filter(function(r){return r.opening||r.purchases||r.transferIn||r.transferOut||r.consumedAHL||r.consumedALC||r.consumedShared||r.adjustments||r.closing;});
   rows.sort(function(a,b){return (a.city+a.category+a.product).localeCompare(b.city+b.category+b.product);});
   return {month:month,rows:rows};
@@ -203,4 +203,14 @@ function getInventoryReport(payload) {
 function getOperations(payload) {
   var dashboard=getDashboard(payload);
   return { myLocationId:actorLocation(payload.actor), catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:readAll('LEDGER').slice(-500).reverse().map(function(r){return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || ''};}) };
+}
+
+/** Sets a product's main vendor (the one the purchase screens list first). Past purchases keep the vendor they were bought from. */
+function processProductSetVendor(payload) {
+  var r=payload.data || {};
+  if(!readAll('LISTS').some(function(v){return v.Type==='VENDOR' && v.Code===r.vendorId && isTruthy(v.Active);})) throw new Error('VALIDATION: Choose a listed vendor.');
+  if(!findRecord('PRODUCTS','ProductID',r.productId)) throw new Error('VALIDATION: Product not found.');
+  updateRecordFields('PRODUCTS','ProductID',r.productId,{VendorID:r.vendorId});
+  audit(payload.actor,'product.setVendor',r.productId,r);
+  return {productId:r.productId,vendorId:r.vendorId};
 }

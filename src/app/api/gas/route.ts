@@ -25,6 +25,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "handover.cancel": ["PurchaseCoordinator", "Admin"],
   "stock.adjust": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.create": ["PurchaseCoordinator", "Admin"],
+  "product.setVendor": ["PurchaseCoordinator", "Admin"],
   "inventoryReport.read": ["PurchaseCoordinator", "Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],

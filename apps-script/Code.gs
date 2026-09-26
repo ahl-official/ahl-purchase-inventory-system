@@ -80,6 +80,7 @@ function doPost(e) {
         'handover.cancel':['PurchaseCoordinator','Admin'],
         'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin'],
         'product.create':['PurchaseCoordinator','Admin'],
+        'product.setVendor':['PurchaseCoordinator','Admin'],
         'inventoryReport.read':['PurchaseCoordinator','Admin']
       };
       if(payload.action !== 'auth.login') {
@@ -88,6 +89,7 @@ function doPost(e) {
       }
 
       // A repeated submit cannot write stock twice, even after a lost response.
+      var startedHere=false;
       var mutation=payload.action!=='auth.login' && !/\.(read|list)$/.test(payload.action);
       var operationId=payload.data && payload.data.operationId;
       if(mutation) {
@@ -95,10 +97,12 @@ function doPost(e) {
         var prior=findRecord('OPERATIONS','OperationID',operationId);
         if(prior) {
           if(prior.Actor!==payload.actor || prior.Action!==payload.action) throw new Error('FORBIDDEN: Invalid operation reference.');
+          if(prior.Status==='FAILED') { var failed=JSON.parse(prior.Result || '{}'); return respondJson({success:false,error:failed.error || 'HANDLER_ERROR',message:failed.message || 'This request failed earlier.'},422); }
           if(prior.Status==='COMPLETED') return respondJson({success:true,data:JSON.parse(prior.Result)},200);
           throw new Error('OUTCOME_UNKNOWN: This submission was already started. Refresh and ask management to check it before making another submission.');
         }
         appendRecord('OPERATIONS',{OperationID:operationId,Date:new Date(),Actor:payload.actor,Action:payload.action,Status:'STARTED',Result:''});
+        startedHere=true;
       }
 
       switch (payload.action) {
@@ -109,6 +113,7 @@ function doPost(e) {
         case 'handover.cancel': result=processHandoverCancel(payload); break;
         case 'stock.adjust': result=processStockAdjustment(payload); break;
         case 'product.create': result=processProductCreate(payload); break;
+        case 'product.setVendor': result=processProductSetVendor(payload); break;
         case 'inventoryReport.read': result=getInventoryReport(payload); break;
         case "auth.login":
           result = processAuthLogin(payload);
@@ -169,6 +174,11 @@ function doPost(e) {
       var coded = split > 0 && /^[A-Z_]+$/.test(raw.substring(0, split));
 
       audit(payload.actor, payload.action, "", raw, "FAILED");
+
+      // A rejected request leaves its operation as FAILED with the reason, so a resend returns the same answer.
+      if (startedHere) {
+        try { updateRecordFields('OPERATIONS','OperationID',operationId,{Status:'FAILED',Result:JSON.stringify({error:coded ? raw.substring(0, split) : 'HANDLER_ERROR',message:coded ? raw.substring(split + 1).trim() : raw})}); } catch (ignore) {}
+      }
 
       return respondJson(
         {

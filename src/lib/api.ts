@@ -25,6 +25,7 @@ export type AppsScriptAction =
   | "handover.cancel"
   | "stock.adjust"
   | "product.create"
+  | "product.setVendor"
   | "inventoryReport.read"
   | "auth.login"
   | "stock.issue"
@@ -119,7 +120,18 @@ export async function callAppsScript<TResponse = unknown, TData = unknown>(
   payload: AppsScriptPayload<TData>,
   options: { timeoutMs?: number } = {}
 ): Promise<ApiResult<TResponse>> {
-  return attemptCallAppsScript<TResponse, TData>(payload, options);
+  // Google occasionally answers a POST with the script's GET health page: "success" with no result.
+  // The write may or may not have run, and resending the same operation id is safe (the backend returns
+  // the stored result), so retry once. Never report an empty reply as success.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await attemptCallAppsScript<TResponse, TData>(payload, options);
+    if (!result.ok || result.data !== undefined) return result;
+  }
+  return {
+    ok: false,
+    error: "BAD_GATEWAY",
+    message: "The backend gave an empty reply. Refresh and check before repeating.",
+  };
 }
 
 async function attemptCallAppsScript<TResponse = unknown, TData = unknown>(
