@@ -97,11 +97,14 @@ function doPost(e) {
         var prior=findRecord('OPERATIONS','OperationID',operationId);
         if(prior) {
           if(prior.Actor!==payload.actor || prior.Action!==payload.action) throw new Error('FORBIDDEN: Invalid operation reference.');
-          if(prior.Status==='FAILED') { var failed=JSON.parse(prior.Result || '{}'); return respondJson({success:false,error:failed.error || 'HANDLER_ERROR',message:failed.message || 'This request failed earlier.'},422); }
           if(prior.Status==='COMPLETED') return respondJson({success:true,data:JSON.parse(prior.Result)},200);
-          throw new Error('OUTCOME_UNKNOWN: This submission was already started. Refresh and ask management to check it before making another submission.');
+          if(prior.Status==='STARTED') throw new Error('OUTCOME_UNKNOWN: This submission was already started. Refresh and ask management to check it before making another submission.');
+          // FAILED: nothing was written last time, so it is safe to run the handler fresh
+          // instead of replaying a stale answer -- the reason it failed may no longer apply.
+          updateRecordFields('OPERATIONS','OperationID',operationId,{Status:'STARTED',Result:''});
+        } else {
+          appendRecord('OPERATIONS',{OperationID:operationId,Date:new Date(),Actor:payload.actor,Action:payload.action,Status:'STARTED',Result:''});
         }
-        appendRecord('OPERATIONS',{OperationID:operationId,Date:new Date(),Actor:payload.actor,Action:payload.action,Status:'STARTED',Result:''});
         startedHere=true;
       }
 

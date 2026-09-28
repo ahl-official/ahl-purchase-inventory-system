@@ -17,11 +17,11 @@ export function groupProducts(products: Product[], vendors: Lookup[], vendorId: 
   const q = query.trim().toLowerCase(), vendor = vendors.find(v => v.id === vendorId);
   if (q) { const hits = products.filter(p => p.name.toLowerCase().includes(q)); return hits.length ? [{ label: 'Results', items: [...hits.filter(p => p.vendorId === vendorId), ...hits.filter(p => p.vendorId !== vendorId)] }] : []; }
   const groups: { label: string; items: Product[] }[] = [
-    { label: '', items: [] }, { label: vendor ? `${vendor.name} products` : 'Products', items: [] },
+    { label: vendor ? `${vendor.name} products` : 'Products', items: [] },
     { label: 'No vendor yet', items: [] }, { label: 'Other vendors', items: [] },
   ];
   for (const p of products) {
-    const i = !vendor || p.vendorId === vendorId ? 1 : !p.vendorId ? 2 : 3;
+    const i = !vendor || p.vendorId === vendorId ? 0 : !p.vendorId ? 1 : 2;
     groups[i].items.push(p);
   }
   return groups.filter(g => g.items.length);
