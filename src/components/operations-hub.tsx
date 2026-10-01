@@ -77,7 +77,10 @@ function StockForm({form,data,office,admin,busy,onSubmit,onClose}:{form:FormSpec
   const [invoice,setInvoice]=useState(''),[amount,setAmount]=useState(''),[photo,setPhoto]=useState<CapturedPhoto|null>(null),[productPhoto,setProductPhoto]=useState<CapturedPhoto|null>(null);
   const [scanning,setScanning]=useState(false),[scanError,setScanError]=useState('');
   const p=c.products.find(p=>p.id===productId),s=data.dashboard.stock.find(s=>s.productId===productId),loc=office?c.headOfficeLocationId:(data.myLocationId||c.salonFloorLocationId),available=(office?s?.headOfficeAvailable:(s?.locationBalances?.[loc]??s?.salonFloorBalance))||0;
-  const studios=c.locations.filter(l=>l.unit&&l.id!==loc&&(l.id===c.salonFloorLocationId||c.people.some(p=>p.role==='ProductDistributor'&&p.locationId===l.id)));
+  // Any active city is a valid destination, not just ones with someone already based there --
+  // sending to a city with nobody there yet is exactly the case the sender names themself as
+  // receiver for. Head Office is never a destination: stock already lives there.
+  const studios=c.locations.filter(l=>l.unit&&l.id!==loc&&l.id!==c.headOfficeLocationId);
   const defaultDestination=loc===c.dispatchLocationId?studios.find(l=>l.id!==c.salonFloorLocationId)?.id:studios.find(l=>l.id===c.salonFloorLocationId)?.id;
   const [toLocation,setToLocation]=useState(defaultDestination||studios[0]?.id||c.salonFloorLocationId);
   const uom=kind==='receive'||kind==='order'?p?.purchaseUom:p?.uom,requiresPerson=['request','handover','issue'].includes(kind),nobodyAtDestination=toLocation!==c.salonFloorLocationId&&!c.people.some(p=>p.role==='ProductDistributor'&&p.locationId===toLocation),people=c.people.filter(p=>kind==='issue'?p.role==='Technician':p.role==='Technician'?false:kind!=='handover'||(p.role==='ProductDistributor'&&(toLocation===c.salonFloorLocationId||p.locationId===toLocation||(nobodyAtDestination&&p.id===data.myUserId))));
