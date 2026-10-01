@@ -16,7 +16,7 @@ for (const l of fs.readFileSync(".env", "utf8").split(/\r?\n/)) {
 }
 const URL_ = env.NEXT_PUBLIC_APPS_SCRIPT_URL, SECRET = env.HMAC_SECRET;
 const SATVIK = process.env.SATVIK_EMAIL || "purchase@ahl.com";
-const HITESH = process.env.HITESH_EMAIL || "hitesh@ahl.com";
+const HITESH = process.env.HITESH_EMAIL || "salon@ahl.com";
 const DISTRIBUTOR = process.env.DISTRIBUTOR_EMAIL || "distributor@ahl.com";
 const RUN = crypto.randomBytes(2).toString("hex");
 const TINY_JPEG = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";

@@ -130,8 +130,8 @@ export default function LoginPage() {
               <dl className="space-y-1 text-xs text-muted-foreground">
                 {[
                   ["Management", "admin@ahl.com"],
-                  ["Purchase", "purchase@ahl.com"],
-                  ["Distribution", "hitesh@ahl.com"],
+                  ["Purchase & Inventory", "purchase@ahl.com"],
+                  ["Salon Inventory", "salon@ahl.com"],
                 ].map(([role, mail]) => (
                   <div key={mail} className="flex justify-between gap-4">
                     <dt>{role}</dt>
