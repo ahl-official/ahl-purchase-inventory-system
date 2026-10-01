@@ -15,7 +15,7 @@ for (const line of fs.readFileSync(".env", "utf8").split(/\r?\n/)) {
 
 const body = JSON.stringify({
   action: "dashboard.read",
-  actor: "satvik@ahl.com",
+  actor: "purchase@ahl.com",
   data: {},
 });
 const timestamp = Date.now();
