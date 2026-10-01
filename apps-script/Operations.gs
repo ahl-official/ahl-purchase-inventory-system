@@ -22,7 +22,7 @@ function getCatalogue() {
     // Explicit whitelist: never expose login or password fields.
     people: readAll('PEOPLE').filter(function (r) { return isTruthy(r.Active); }).map(function (r) { return { id:r.UserID, name:r.Name, role:appRole(r.Role) || r.Role, locationId:r.LocationID }; }),
     categories:list('CATEGORY'), vendors:list('VENDOR'), locations:list('LOCATION'),
-    headOfficeLocationId:getConfig('HeadOfficeLocationID','LOC-01'), salonFloorLocationId:getConfig('SalonFloorLocationID','LOC-02'),
+    headOfficeLocationId:getConfig('HeadOfficeLocationID','LOC-01'), salonFloorLocationId:getConfig('SalonFloorLocationID','LOC-02'), dispatchLocationId:getConfig('DispatchLocationID','LOC-05'),
     approvalThreshold:getConfigNumber('ApprovalThreshold',5000)
   };
 }
