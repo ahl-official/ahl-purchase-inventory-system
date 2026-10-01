@@ -387,17 +387,23 @@ function processStockHandover(payload) {
   var product = getProduct(req.productId);
   if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
 
-  var fromLocationId = req.fromLocationId || getConfig("HeadOfficeLocationID", "LOC-01");
+  // Where the stock leaves from is the sender's own location, not whatever the client claims --
+  // this lets anyone holding stock (Head Office, or a transit handler who already confirmed a
+  // leg into their own location) forward it on, while still being safe against spoofing.
+  var fromLocationId = actorLocation(payload.actor);
   var toLocationId = req.toLocationId || getConfig("SalonFloorLocationID", "LOC-02");
   var salonId = getConfig('SalonFloorLocationID','LOC-02');
-  if(fromLocationId!==getConfig('HeadOfficeLocationID','LOC-01')) throw new Error('FORBIDDEN: Handovers must start at Head Office.');
-  // A destination is any active studio with a city (Khar, Delhi, Bangalore...).
+  // A destination is any active studio with a city (Khar, Delhi, Bangalore, In Transit...).
   var destination=readAll('LISTS').filter(function(v){return v.Type==='LOCATION' && v.Code===toLocationId && isTruthy(v.Active) && v.Extra;})[0];
   if(!destination || toLocationId===fromLocationId) throw new Error('VALIDATION: Choose an active destination studio.');
   positiveQuantity(qty,product,false);
   var receiver=findRecord('PEOPLE','UserID',req.toUserId);
   if(!receiver || !isTruthy(receiver.Active) || appRole(receiver.Role)!=='ProductDistributor') throw new Error('VALIDATION: Select a receiver.');
-  if(toLocationId!==salonId && String(receiver.LocationID).trim()!==toLocationId) throw new Error('VALIDATION: Select a receiver based at '+destination.Name+'.');
+  // For a city with nobody based there yet, the sender can name themself as receiver and
+  // confirm it later once the destination tells them (by phone/WhatsApp) that it arrived.
+  var senderUser=getUser(payload.actor);
+  var selfConfirming=senderUser && receiver.UserID===senderUser.UserID;
+  if(toLocationId!==salonId && String(receiver.LocationID).trim()!==toLocationId && !selfConfirming) throw new Error('VALIDATION: Select a receiver based at '+destination.Name+', or yourself if you will confirm it once it arrives.');
 
   // Pending handovers reserve stock but do not move custody until Hitesh's
   // recount. This prevents the same Receiving stock being promised twice.

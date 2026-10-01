@@ -202,7 +202,7 @@ function getInventoryReport(payload) {
 
 function getOperations(payload) {
   var dashboard=getDashboard(payload);
-  return { myLocationId:actorLocation(payload.actor), catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:readAll('LEDGER').slice(-500).reverse().map(function(r){return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || ''};}) };
+  return { myLocationId:actorLocation(payload.actor), myUserId:(getUser(payload.actor)||{}).UserID||'', catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:readAll('LEDGER').slice(-500).reverse().map(function(r){return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || ''};}) };
 }
 
 /** Sets a product's main vendor (the one the purchase screens list first). Past purchases keep the vendor they were bought from. */
