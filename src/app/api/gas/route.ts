@@ -17,6 +17,9 @@ import { callAppsScript, type AppsScriptAction } from "@/lib/api";
 // a PurchaseCoordinator cannot issue stock by hand-crafting a fetch.
 type SessionAction = Exclude<AppsScriptAction, "auth.login">;
 
+// Keep this in sync with the `roles` map in apps-script/Code.gs -- a role granted there but not
+// here never reaches the backend at all (rejected here first), which is easy to miss since the
+// automated tests call Apps Script directly and skip this route entirely.
 const ACTION_ROLES: Record<SessionAction, string[]> = {
   "operations.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "catalogue.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
@@ -34,7 +37,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   // rather than letting him self-approve like Satvik can.
   "purchase.request": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "purchase.approve": ["PurchaseCoordinator", "Admin"],
-  "stock.handover": ["PurchaseCoordinator", "Admin"],
+  "stock.handover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.confirmHandover": ["ProductDistributor", "Admin"],
   "handover.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.submit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
