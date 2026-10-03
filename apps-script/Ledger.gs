@@ -398,11 +398,12 @@ function processStockHandover(payload) {
   if(!destination || toLocationId===fromLocationId) throw new Error('VALIDATION: Choose an active destination studio.');
   positiveQuantity(qty,product,false);
   var receiver=findRecord('PEOPLE','UserID',req.toUserId);
-  if(!receiver || !isTruthy(receiver.Active) || appRole(receiver.Role)!=='ProductDistributor') throw new Error('VALIDATION: Select a receiver.');
   // For a city with nobody based there yet, the sender can name themself as receiver and
-  // confirm it later once the destination tells them (by phone/WhatsApp) that it arrived.
+  // confirm it later once the destination tells them (by phone/WhatsApp) that it arrived --
+  // this applies whoever the sender is, not only a ProductDistributor.
   var senderUser=getUser(payload.actor);
-  var selfConfirming=senderUser && receiver.UserID===senderUser.UserID;
+  var selfConfirming=senderUser && receiver && receiver.UserID===senderUser.UserID;
+  if(!receiver || !isTruthy(receiver.Active) || (appRole(receiver.Role)!=='ProductDistributor' && !selfConfirming)) throw new Error('VALIDATION: Select a receiver.');
   if(toLocationId!==salonId && String(receiver.LocationID).trim()!==toLocationId && !selfConfirming) throw new Error('VALIDATION: Select a receiver based at '+destination.Name+', or yourself if you will confirm it once it arrives.');
 
   // Pending handovers reserve stock but do not move custody until Hitesh's

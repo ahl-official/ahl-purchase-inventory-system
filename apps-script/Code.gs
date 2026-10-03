@@ -68,7 +68,7 @@ function doPost(e) {
         'purchase.request':['PurchaseCoordinator','ProductDistributor','Admin'],
         'purchase.approve':['PurchaseCoordinator','Admin'],
         'stock.handover':['PurchaseCoordinator','ProductDistributor','Admin'],
-        'stock.confirmHandover':['ProductDistributor','Admin'],
+        'stock.confirmHandover':['PurchaseCoordinator','ProductDistributor','Admin'],
         'handover.list':['PurchaseCoordinator','ProductDistributor','Admin'],
         'opening.submit':['PurchaseCoordinator','ProductDistributor','Admin'],
         'opening.list':['PurchaseCoordinator','ProductDistributor','Admin'],

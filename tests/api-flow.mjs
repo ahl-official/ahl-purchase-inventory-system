@@ -17,7 +17,6 @@ for (const l of fs.readFileSync(".env", "utf8").split(/\r?\n/)) {
 const URL_ = env.NEXT_PUBLIC_APPS_SCRIPT_URL, SECRET = env.HMAC_SECRET;
 const SATVIK = process.env.SATVIK_EMAIL || "purchase@ahl.com";
 const HITESH = process.env.HITESH_EMAIL || "salon@ahl.com";
-const DISTRIBUTOR = process.env.DISTRIBUTOR_EMAIL || "distributor@ahl.com";
 const RUN = crypto.randomBytes(2).toString("hex");
 const TINY_JPEG = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
 
@@ -212,28 +211,16 @@ await t("monthly report matches the hand-calculated numbers", async () => {
   for (const k of Object.keys(want)) for (const f of Object.keys(want[k])) eq(row(products[k].id)?.[f], want[k][f], `${k}.${f}`);
 });
 
-await t("two-hop dispatch: Head Office -> dispatcher -> a city with nobody based there yet, dispatcher confirms both ends", async () => {
+await t("city transfer: Satvik sends direct to a city with nobody based there, names himself as receiver, confirms it himself later", async () => {
   const cat = okRes(await call(SATVIK, "catalogue.read"), "catalogue.read");
-  const dist = cat.people.find((p) => p.id === "USR-021") || cat.people.find((p) => p.role === "ProductDistributor" && p.name === "Distributor");
-  if (!dist) throw new Error("no Distributor account found - run the dispatcher setup first");
-  const delhi = cat.locations.find((l) => l.unit === "Delhi");
-  const dispatch = cat.locations.find((l) => l.id === dist.locationId);
-  if (!dispatch) throw new Error("Distributor is not based at a known location");
+  const satvikId = cat.people.find((p) => p.id === "USR-005").id;
+  const bangalore = cat.locations.find((l) => l.unit === "Bangalore");
 
-  // leg 1: Head Office -> dispatcher's own location, received by the dispatcher
   const hoBefore = await stock(A(), state.HO);
-  const h1 = okRes(await call(SATVIK, "stock.handover", { productId: A(), qty: 5, toUserId: dist.id, toLocationId: dispatch.id }), "leg 1 create");
-  eq(await stock(A(), state.HO), hoBefore - 5, "HO reserved 5 for leg 1");
-  okRes(await call(DISTRIBUTOR, "stock.confirmHandover", { handoverId: h1.handoverId, countedQty: 5 }), "leg 1 confirm");
-  eq(await stock(A(), dispatch.id), 5, "dispatcher's location after leg 1");
-
-  // leg 2: dispatcher -> Delhi, naming himself as receiver since nobody is based there
-  rejected(await call(SATVIK, "stock.handover", { productId: A(), qty: 5, toUserId: dist.id, toLocationId: delhi.id }), "VALIDATION", "dispatcher is not based in Delhi and is not the one sending this leg");
-  const h2 = okRes(await call(DISTRIBUTOR, "stock.handover", { productId: A(), qty: 5, toUserId: dist.id, toLocationId: delhi.id }), "leg 2 create, self as receiver");
-  eq(await stock(A(), dispatch.id), 0, "dispatcher's location after leg 2 reserved");
-  rejected(await call(SATVIK, "stock.confirmHandover", { handoverId: h2.handoverId, countedQty: 5 }), "FORBIDDEN", "only the dispatcher himself can confirm his own self-receipt");
-  okRes(await call(DISTRIBUTOR, "stock.confirmHandover", { handoverId: h2.handoverId, countedQty: 5 }), "leg 2 confirm (dispatcher confirms on Delhi's behalf)");
-  eq(await stock(A(), delhi.id), 5, "Delhi after both legs");
+  const h = okRes(await call(SATVIK, "stock.handover", { productId: A(), qty: 5, toUserId: satvikId, toLocationId: bangalore.id }), "create, self as receiver");
+  eq(await stock(A(), state.HO), hoBefore - 5, "HO reserved 5");
+  okRes(await call(SATVIK, "stock.confirmHandover", { handoverId: h.handoverId, countedQty: 5 }), "Satvik confirms his own self-named handover");
+  eq(await stock(A(), bangalore.id), 5, "Bangalore after confirm");
 });
 
 await t("role and signature checks", async () => {
