@@ -64,6 +64,7 @@ function doPost(e) {
 
       var roles = {
         'stock.issue':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'stock.retailSale':['PurchaseCoordinator','ProductDistributor','Admin'],
         'stock.receive':['PurchaseCoordinator','Admin'],
         'purchase.request':['PurchaseCoordinator','ProductDistributor','Admin'],
         'purchase.approve':['PurchaseCoordinator','Admin'],
@@ -123,6 +124,9 @@ function doPost(e) {
           break;
         case "stock.issue":
           result = processStockIssue(payload);
+          break;
+        case "stock.retailSale":
+          result = processRetailSale(payload);
           break;
         case "stock.receive":
           result = processStockReceive(payload);

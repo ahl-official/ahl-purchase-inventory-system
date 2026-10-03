@@ -29,6 +29,7 @@ export type AppsScriptAction =
   | "inventoryReport.read"
   | "auth.login"
   | "stock.issue"
+  | "stock.retailSale"
   | "stock.receive"
   | "purchase.request"
   | "purchase.approve"

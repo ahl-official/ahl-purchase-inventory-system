@@ -194,8 +194,8 @@ function getInventoryReport(payload) {
   var round=function(n){return Math.round(n*1000)/1000;};
   var rows=Object.keys(out).map(function(k){
     var r=out[k], p=prod[r.productId], c=cat[p.CategoryID] || {name:'',unit:''}, cost=Number(p.Cost) || 0;
-    return {month:month,type:p.ProductType || 'Consumable',city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
-  }).filter(function(r){return r.opening||r.purchases||r.transferIn||r.transferOut||r.consumedAHL||r.consumedALC||r.consumedShared||r.adjustments||r.closing;});
+    return {month:month,type:p.ProductType || 'Consumable',city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),retailSold:round(r.retailSold),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
+  }).filter(function(r){return r.opening||r.purchases||r.transferIn||r.transferOut||r.consumedAHL||r.consumedALC||r.consumedShared||r.retailSold||r.adjustments||r.closing;});
   rows.sort(function(a,b){return (a.city+a.category+a.product).localeCompare(b.city+b.category+b.product);});
   return {month:month,rows:rows};
 }

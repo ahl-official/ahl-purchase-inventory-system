@@ -31,6 +31,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "product.setVendor": ["PurchaseCoordinator", "Admin"],
   "inventoryReport.read": ["PurchaseCoordinator", "Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the
   // Apps Script side is what actually forces his rows to PENDING_APPROVAL

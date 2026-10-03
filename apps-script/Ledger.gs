@@ -99,6 +99,53 @@ function processStockIssue(payload) {
 }
 
 /**
+ * A retail sale to a client, as opposed to an ISSUE consumed in a service. Only products marked
+ * Retail or Both are eligible, and who bought it is mandatory -- that is the whole point of this
+ * action: a sale with nobody's name on it is exactly what makes stock impossible to reconcile
+ * against revenue later.
+ */
+function processRetailSale(payload) {
+  var req = payload.data;
+  var actorRole = appRole((getUser(payload.actor) || {}).Role);
+  var expectedLocation = actorLocation(payload.actor);
+  var locationId = req.fromLocationId || expectedLocation;
+  if (actorRole !== "Admin" && locationId !== expectedLocation) {
+    throw new Error("FORBIDDEN: You can sell only from your own stock location.");
+  }
+
+  if (!req.productId) throw new Error("VALIDATION: No product selected.");
+  var product = getProduct(req.productId);
+  if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
+  if (["Retail", "Both"].indexOf(product.ProductType) < 0) throw new Error("VALIDATION: This product is not marked for retail sale.");
+
+  var qty = positiveQuantity(req.qty, product, false);
+  var clientName = String(req.clientName || "").trim();
+  var clientPhone = String(req.clientPhone || "").trim();
+  if (!clientName) throw new Error("VALIDATION: Record who bought this.");
+  if (!clientPhone) throw new Error("VALIDATION: Record the client's phone number.");
+
+  var balance = computeAvailableBalance(req.productId, locationId);
+  if (qty > balance) {
+    throw new Error("INSUFFICIENT_STOCK: " + balance + " " + product.IssueUOM + " on hand at " + locationId + ", tried to sell " + qty + ".");
+  }
+
+  var txnId = nextId("TXN");
+  var notesParts = ["Client: " + clientName, "Phone: " + clientPhone];
+  if (req.refNo) notesParts.push("Ref: " + String(req.refNo).trim());
+  if (req.notes) notesParts.push(String(req.notes).trim());
+
+  appendRecord("LEDGER", {
+    TxnID: txnId, Date: new Date(), Type: "RETAIL_SALE", Direction: -1,
+    ProductID: req.productId, Qty: qty, UOM: product.IssueUOM, QtyBase: toBaseQty(product, qty, false),
+    LocationID: locationId, Amount: qty * (Number(product.Cost) || 0),
+    Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | ")
+  });
+
+  audit(payload.actor, "stock.retailSale", txnId, { productId: req.productId, qty: qty, clientName: clientName });
+  return { txnId: txnId, newBalance: balance - qty, uom: product.IssueUOM };
+}
+
+/**
  * Records a delivery and files its bill photo.
  * A receipt without a stored bill is rejected outright rather than recorded
  * without its supporting document.

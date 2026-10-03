@@ -223,6 +223,18 @@ await t("city transfer: Satvik sends direct to a city with nobody based there, n
   eq(await stock(A(), bangalore.id), 5, "Bangalore after confirm");
 });
 
+await t("retail sale: requires a client, only sells Retail/Both products, and deducts stock separately from a service issue", async () => {
+  rejected(await call(HITESH, "stock.retailSale", { productId: C(), qty: 1 }), "VALIDATION", "no client name");
+  rejected(await call(HITESH, "stock.retailSale", { productId: C(), qty: 1, clientName: "Test" }), "VALIDATION", "no client phone");
+  rejected(await call(HITESH, "stock.retailSale", { productId: A(), qty: 1, clientName: "Test", clientPhone: "9999999999" }), "VALIDATION", "A is Consumable, not sellable");
+  const before = await stock(C(), state.SALON);
+  const sale = okRes(await call(HITESH, "stock.retailSale", { productId: C(), qty: 5, clientName: "Priya Sharma", clientPhone: "9876543210", refNo: "INV-1" }), "retail sale");
+  eq(await stock(C(), state.SALON), before - 5, "Salon C after the sale");
+  const hist = state.ops.history.find((h) => h.txnId === sale.txnId);
+  eq(hist.type, "RETAIL_SALE", "ledger type");
+  eq(hist.notes.includes("Priya Sharma") && hist.notes.includes("9876543210"), true, "client recorded in the ledger");
+});
+
 await t("role and signature checks", async () => {
   rejected(await call(HITESH, "inventoryReport.read", {}), "FORBIDDEN", "report for salon role");
   rejected(await call(SATVIK, "opening.approve", { countId: "x", decision: "APPROVE" }), "FORBIDDEN", "opening.approve as Satvik");
