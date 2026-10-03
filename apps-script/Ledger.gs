@@ -10,7 +10,7 @@
  * A single issue can be split across categories and people; all splits share a
  * HandoverID so the movement can be reconstructed or reversed as one event.
  */
-var BUSINESS_UNITS = ["AHL", "Alchemane", "Shared"];
+var BUSINESS_UNITS = ["AHL", "Alchemane", "Shared", "Hair Patch at Home"];
 
 /** The business unit a category belongs to (LISTS.Extra); Shared when it has none. */
 function businessUnitOf(categoryId) {
@@ -41,7 +41,7 @@ function processStockIssue(payload) {
     var splitQty = positiveQuantity(s.qty,product,false);
     if (splitQty <= 0) throw new Error("VALIDATION: Every split needs a quantity above zero.");
     if (!s.categoryId) throw new Error("VALIDATION: Every split needs a service category.");
-    if (s.businessUnit && BUSINESS_UNITS.indexOf(s.businessUnit) < 0) throw new Error("VALIDATION: Choose AHL, Alchemane or Shared.");
+    if (s.businessUnit && BUSINESS_UNITS.indexOf(s.businessUnit) < 0) throw new Error("VALIDATION: Choose AHL, Alchemane, Shared or Hair Patch at Home.");
     if (!s.recipientUserId) throw new Error("VALIDATION: Every split needs a technician.");
     if (!readAll('PEOPLE').some(function(r){return r.UserID===s.recipientUserId && isTruthy(r.Active);})) throw new Error('VALIDATION: Select an active recipient.');
     return sum + splitQty;
@@ -118,15 +118,18 @@ function processRetailSale(payload) {
   if (!product) throw new Error("UNKNOWN_PRODUCT: " + req.productId + " is not in PRODUCTS.");
   if (["Retail", "Both"].indexOf(product.ProductType) < 0) throw new Error("VALIDATION: This product is not marked for retail sale.");
 
+  // Sold by the piece (bottle, tube, pack...), same as a delivery receipt -- the ledger still
+  // records the actual stock-unit amount (QtyBase), converted using the product's own pack size.
   var qty = positiveQuantity(req.qty, product, false);
+  var qtyBase = toBaseQty(product, qty, true);
   var clientName = String(req.clientName || "").trim();
   var clientPhone = String(req.clientPhone || "").trim();
   if (!clientName) throw new Error("VALIDATION: Record who bought this.");
   if (!clientPhone) throw new Error("VALIDATION: Record the client's phone number.");
 
   var balance = computeAvailableBalance(req.productId, locationId);
-  if (qty > balance) {
-    throw new Error("INSUFFICIENT_STOCK: " + balance + " " + product.IssueUOM + " on hand at " + locationId + ", tried to sell " + qty + ".");
+  if (qtyBase > balance) {
+    throw new Error("INSUFFICIENT_STOCK: " + balance + " " + product.IssueUOM + " on hand at " + locationId + ", tried to sell " + qtyBase + ".");
   }
 
   var txnId = nextId("TXN");
@@ -136,13 +139,13 @@ function processRetailSale(payload) {
 
   appendRecord("LEDGER", {
     TxnID: txnId, Date: new Date(), Type: "RETAIL_SALE", Direction: -1,
-    ProductID: req.productId, Qty: qty, UOM: product.IssueUOM, QtyBase: toBaseQty(product, qty, false),
-    LocationID: locationId, Amount: qty * (Number(product.Cost) || 0),
+    ProductID: req.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
+    LocationID: locationId, Amount: qtyBase * (Number(product.Cost) || 0),
     Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | ")
   });
 
   audit(payload.actor, "stock.retailSale", txnId, { productId: req.productId, qty: qty, clientName: clientName });
-  return { txnId: txnId, newBalance: balance - qty, uom: product.IssueUOM };
+  return { txnId: txnId, newBalance: balance - qtyBase, uom: product.IssueUOM };
 }
 
 /**

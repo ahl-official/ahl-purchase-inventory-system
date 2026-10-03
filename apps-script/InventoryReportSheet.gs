@@ -9,7 +9,7 @@
  */
 var REPORT_SHEET_ID = "1J8rXFj01n5kIj-dBAjttkNlIv-KcJekSnM3Un-55JFU";
 var REPORT_FIRST_ROW = 4;
-var REPORT_HEADERS = ["Month", "City", "Business Unit", "Category", "Product Name", "Tracking Type", "Batch/Serial No.", "Opening Stock", "Purchases (Units)", "Transfer In", "Transfer Out", "Total Available (Auto)", "Units Consumed in Service (AHL)", "Units Consumed in Service (ALC)", "Units Consumed in Service (Shared)", "Units Sold as Retail (Auto from Revenue)", "Total Out (Auto)", "Closing Stock (Auto)", "Cost Per Unit (INR)", "Closing Stock Value (Auto)", "Retail Mapping Required?", "Revenue Product Mapping (Exact)", "Mapping Status (Auto)", "Mapping Note", "Revenue Product Options (Auto)", "Damaged / adjusted (info)", "Closing in app (check)"];
+var REPORT_HEADERS = ["Month", "City", "Business Unit", "Category", "Product Name", "Tracking Type", "Batch/Serial No.", "Opening Stock", "Purchases (Units)", "Transfer In", "Transfer Out", "Total Available (Auto)", "Units Consumed in Service (AHL)", "Units Consumed in Service (ALC)", "Units Consumed in Service (Shared)", "Units Consumed in Service (Hair Patch at Home)", "Units Sold as Retail (Auto from Revenue)", "Total Out (Auto)", "Closing Stock (Auto)", "Cost Per Unit (INR)", "Closing Stock Value (Auto)", "Retail Mapping Required?", "Revenue Product Mapping (Exact)", "Mapping Status (Auto)", "Mapping Note", "Revenue Product Options (Auto)", "Damaged / adjusted (info)", "Closing in app (check)"];
 
 function setupInventoryReportSheet() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
@@ -37,13 +37,13 @@ function refreshInventoryReportSheet() {
         new Date(Number(m.slice(0, 4)), Number(m.slice(5)) - 1, 1), x.city, x.businessUnit, x.category, x.product, "Bulk", "",
         x.opening, x.purchases, x.transferIn || "", x.transferOut || "",
         "=H" + r + "+N(I" + r + ")+N(J" + r + ")-N(K" + r + ")",
-        x.consumedAHL || "", x.consumedALC || "", x.consumedShared || "", "",
-        "=N(M" + r + ")+N(N" + r + ")+N(O" + r + ")+N(P" + r + ")",
-        "=L" + r + "-Q" + r + "+N(Z" + r + ")",
-        x.costPerUnit, "=R" + r + "*N(S" + r + ")",
+        x.consumedAHL || "", x.consumedALC || "", x.consumedShared || "", x.consumedHairPatchHome || "", "",
+        "=N(M" + r + ")+N(N" + r + ")+N(O" + r + ")+N(P" + r + ")+N(Q" + r + ")",
+        "=L" + r + "-R" + r + "+N(AA" + r + ")",
+        x.costPerUnit, "=S" + r + "*N(T" + r + ")",
         retail ? "Yes" : "No", "",
-        '=IF(U' + r + '<>"Yes","Service consumption only",IF(V' + r + '="","Mapping required (connect to Revenue Tracker)","Mapped"))',
-        retail ? "Retail units sold come from the Revenue Tracker once connected." : "Tracked through service-consumption columns M:O; retail matching is disabled.",
+        '=IF(V' + r + '<>"Yes","Service consumption only",IF(W' + r + '="","Mapping required (connect to Revenue Tracker)","Mapped"))',
+        retail ? "Retail units sold come from the Revenue Tracker once connected." : "Tracked through service-consumption columns M:P; retail matching is disabled.",
         "", x.adjustments || "", x.closing
       ]);
     });

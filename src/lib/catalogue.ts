@@ -12,10 +12,11 @@ export function useCatalogue() {
   return catalogue;
 }
 
-/** Product picker order: typing shows only matches (the vendor's first); otherwise the chosen vendor's products, products with no vendor, other vendors. Nothing is hidden. */
-export function groupProducts(products: Product[], vendors: Lookup[], vendorId: string, query: string) {
+/** Product picker order: typing shows only matches (the vendor's first); otherwise the chosen vendor's products, products with no vendor, other vendors. Nothing is hidden. When balanceOf is given, zero-stock products sink to the bottom of each group instead of being removed. */
+export function groupProducts(products: Product[], vendors: Lookup[], vendorId: string, query: string, balanceOf?: (p: Product) => number) {
   const q = query.trim().toLowerCase(), vendor = vendors.find(v => v.id === vendorId);
-  if (q) { const hits = products.filter(p => p.name.toLowerCase().includes(q)); return hits.length ? [{ label: 'Results', items: [...hits.filter(p => p.vendorId === vendorId), ...hits.filter(p => p.vendorId !== vendorId)] }] : []; }
+  const byStock = (items: Product[]) => balanceOf ? [...items].sort((a, b) => (balanceOf(a) > 0 ? 0 : 1) - (balanceOf(b) > 0 ? 0 : 1)) : items;
+  if (q) { const hits = products.filter(p => p.name.toLowerCase().includes(q)); return hits.length ? [{ label: 'Results', items: byStock([...hits.filter(p => p.vendorId === vendorId), ...hits.filter(p => p.vendorId !== vendorId)]) }] : []; }
   const groups: { label: string; items: Product[] }[] = [
     { label: vendor ? `${vendor.name} products` : 'Products', items: [] },
     { label: 'No vendor yet', items: [] }, { label: 'Other vendors', items: [] },
@@ -24,5 +25,12 @@ export function groupProducts(products: Product[], vendors: Lookup[], vendorId: 
     const i = !vendor || p.vendorId === vendorId ? 0 : !p.vendorId ? 1 : 2;
     groups[i].items.push(p);
   }
-  return groups.filter(g => g.items.length);
+  return groups.filter(g => g.items.length).map(g => ({ ...g, items: byStock(g.items) }));
+}
+
+/** e.g. 750 ML in a product bought by the Tube (60 ML each) -> "12 Tube + 30 ML". Nothing to show when the stock and purchase unit are the same (conversion 1). */
+export function packLabel(p: Product | undefined, qty: number) {
+  if (!p || p.conversion <= 1 || qty <= 0) return undefined;
+  const full = Math.floor(qty / p.conversion + 1e-9), loose = Math.round((qty - full * p.conversion) * 100) / 100;
+  return `${full} ${p.purchaseUom}${loose > 0 ? ` + ${loose} ${p.uom}` : ''}`;
 }

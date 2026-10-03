@@ -168,7 +168,7 @@ function getInventoryReport(payload) {
   // Older rows have no BusinessUnit; they fall back to their category's unit.
   var unitOf=function(l){return l.BusinessUnit || (cat[l.CategoryID] || {}).unit;};
   ledger.forEach(function(l){if(l.Type==='ISSUE') issueUnit[l.TxnID]=unitOf(l);});
-  var bucket=function(u){return u==='AHL'?'ahl':u==='Alchemane'||u==='ALC'?'alc':'shared';};
+  var bucket=function(u){return u==='AHL'?'ahl':u==='Alchemane'||u==='ALC'?'alc':u==='Hair Patch at Home'?'hph':'shared';};
   var handoverCities={};
   ledger.forEach(function(l){
     if(l.Type!=='HANDOVER' || l.Status==='VOID' || l.Status==='PENDING_CONFIRM' || !city[l.LocationID]) return;
@@ -181,7 +181,7 @@ function getInventoryReport(payload) {
     var m=Utilities.formatDate(new Date(l.Date),tz,'yyyy-MM');
     if(m>month) return;
     var key=city[l.LocationID]+'|'+l.ProductID;
-    var r=out[key] || (out[key]={city:city[l.LocationID],productId:l.ProductID,opening:0,purchases:0,tin:0,tout:0,ahl:0,alc:0,shared:0,adjustments:0,closing:0});
+    var r=out[key] || (out[key]={city:city[l.LocationID],productId:l.ProductID,opening:0,purchases:0,tin:0,tout:0,ahl:0,alc:0,shared:0,hph:0,retailSold:0,adjustments:0,closing:0});
     var q=(Number(l.QtyBase) || 0)*(Number(l.Direction) || 0);
     r.closing+=q;
     if(m<month || l.Type==='OPENING') r.opening+=q;
@@ -189,13 +189,14 @@ function getInventoryReport(payload) {
     else if(l.Type==='ISSUE') r[bucket(unitOf(l))]-=q;
     else if(l.Type==='RETURN') r[bucket(issueUnit[l.PORef])]-=q;
     else if(l.Type==='HANDOVER'){if(crossCity(l.HandoverID)){if(q>0) r.tin+=q; else r.tout-=q;}}
+    else if(l.Type==='RETAIL_SALE') r.retailSold-=q;
     else r.adjustments+=q;
   });
   var round=function(n){return Math.round(n*1000)/1000;};
   var rows=Object.keys(out).map(function(k){
     var r=out[k], p=prod[r.productId], c=cat[p.CategoryID] || {name:'',unit:''}, cost=Number(p.Cost) || 0;
-    return {month:month,type:p.ProductType || 'Consumable',city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),retailSold:round(r.retailSold),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
-  }).filter(function(r){return r.opening||r.purchases||r.transferIn||r.transferOut||r.consumedAHL||r.consumedALC||r.consumedShared||r.retailSold||r.adjustments||r.closing;});
+    return {month:month,type:p.ProductType || 'Consumable',city:r.city,businessUnit:c.unit,category:c.name,productId:r.productId,product:p.Name,uom:p.IssueUOM,opening:round(r.opening),purchases:round(r.purchases),transferIn:round(r.tin),transferOut:round(r.tout),consumedAHL:round(r.ahl),consumedALC:round(r.alc),consumedShared:round(r.shared),consumedHairPatchHome:round(r.hph),retailSold:round(r.retailSold),adjustments:round(r.adjustments),closing:round(r.closing),costPerUnit:cost,closingValue:round(r.closing*cost)};
+  }).filter(function(r){return r.opening||r.purchases||r.transferIn||r.transferOut||r.consumedAHL||r.consumedALC||r.consumedShared||r.consumedHairPatchHome||r.retailSold||r.adjustments||r.closing;});
   rows.sort(function(a,b){return (a.city+a.category+a.product).localeCompare(b.city+b.category+b.product);});
   return {month:month,rows:rows};
 }
