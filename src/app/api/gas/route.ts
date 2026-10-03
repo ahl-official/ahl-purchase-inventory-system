@@ -12,6 +12,18 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { callAppsScript, type AppsScriptAction } from "@/lib/api";
+import { readDirect, DIRECT_READ_ACTIONS, type DirectReadAction } from "@/lib/sheets-direct";
+
+function isDirectReadAction(action: AppsScriptAction): action is DirectReadAction {
+  return (DIRECT_READ_ACTIONS as readonly string[]).includes(action);
+}
+
+/** `CODE: message` -> {error, message}, the same split Code.gs does for a thrown handler error. */
+function splitError(raw: string) {
+  const i = raw.indexOf(":");
+  const coded = i > 0 && /^[A-Z_]+$/.test(raw.slice(0, i));
+  return coded ? { error: raw.slice(0, i), message: raw.slice(i + 1).trim() } : { error: "HANDLER_ERROR", message: raw };
+}
 
 // Which roles may invoke which action. Mirrors the middleware's route gating so
 // a PurchaseCoordinator cannot issue stock by hand-crafting a fetch.
@@ -89,9 +101,29 @@ export async function POST(request: Request) {
   }
 
   // actor comes from the session, never from the request body.
+  const actor = session.user.email;
+
+  // Reads only: try Sheets directly first (no Apps Script round trip -- the slow part).
+  // Any failure here (missing env, quota, a bug) falls straight back to the proven
+  // Apps Script path below, so this can only make reads faster, never less reliable.
+  if (isDirectReadAction(action)) {
+    try {
+      const data_ = await readDirect(action, actor, (data as Record<string, unknown>) ?? {});
+      return NextResponse.json({ ok: true, data: data_ }, { status: 200 });
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (!raw.startsWith("DIRECT_READ_UNAVAILABLE")) {
+        // A real business rejection (e.g. FORBIDDEN, VALIDATION) -- report it as-is,
+        // same as Apps Script would, rather than silently retrying against Apps Script.
+        return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
+      }
+      // else: infra problem with the direct path itself -- fall through to Apps Script.
+    }
+  }
+
   const result = await callAppsScript({
     action,
-    actor: session.user.email,
+    actor,
     data: data ?? {},
   });
 
