@@ -28,11 +28,11 @@ function getCatalogue() {
 }
 
 function listPurchaseOrders() {
-  var ledger = readAll('LEDGER');
+  var ledger = readAll('LEDGER'), headOfficeId = getConfig('HeadOfficeLocationID', 'LOC-01');
   return readAll('PURCHASE_ORDERS').map(function (r) {
     var received = ledger.reduce(function (sum,l) { return l.Type === 'RECEIPT' && l.Status !== 'VOID' && l.PORef === r.OrderID ? sum + Number(l.Qty) : sum; },0);
     var p = getProduct(r.ProductID);
-    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '' };
+    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId };
   }).reverse();
 }
 
@@ -42,16 +42,24 @@ function processOrderCreate(payload) {
   if (!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
   var qty = positiveQuantity(r.qty,p,false);
   if (!readAll('LISTS').some(function (v) { return v.Type === 'VENDOR' && v.Code === r.vendorId && isTruthy(v.Active); })) throw new Error('VALIDATION: Select a vendor.');
+  // Where the vendor actually ships this order: Head Office (the default, then handed over
+  // later as always), or straight to an out-of-town studio, skipping that hop for this order.
+  var headOfficeId = getConfig('HeadOfficeLocationID','LOC-01');
+  var deliveryLocationId = String(r.locationId || headOfficeId);
+  if (deliveryLocationId !== headOfficeId && !readAll('LISTS').some(function (v) { return v.Type === 'LOCATION' && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra; })) {
+    throw new Error('VALIDATION: Choose Head Office or an active studio to deliver to.');
+  }
   if (r.requestId) {
     var request = findRecord('REQUESTS','RequestID',r.requestId);
     if (!request || request.ProductID !== r.productId || ['OPEN','ORDERED'].indexOf(request.Status) < 0) throw new Error('VALIDATION: Select an approved request for this product.');
     if (listPurchaseOrders().some(function (o) { return o.requestId === r.requestId && o.status !== 'CANCELLED'; })) throw new Error('DUPLICATE: This request already has an order.');
   }
   var id=nextId('PO');
-  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:new Date(),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || ''});
+  ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
+  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:new Date(),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId});
   if(r.requestId) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
   audit(payload.actor,'order.create',id,r);
-  return {orderId:id};
+  return {orderId:id, deliveryLocationId:deliveryLocationId};
 }
 
 function updateRecordFields(name, key, id, changes) {

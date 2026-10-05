@@ -200,6 +200,7 @@ function getCatalogue(ctx: Ctx) {
 
 function listPurchaseOrders(ctx: Ctx) {
   const ledger = ctx.ledger;
+  const headOfficeId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
   return ctx.purchaseOrders.map((r) => {
     const received = ledger.reduce((sum, l) => (l.Type === "RECEIPT" && l.Status !== "VOID" && l.PORef === r.OrderID ? sum + Number(l.Qty) : sum), 0);
     const p = getProduct(ctx, r.ProductID);
@@ -207,7 +208,7 @@ function listPurchaseOrders(ctx: Ctx) {
       orderId: r.OrderID, date: serialToIso(r.Date), productId: r.ProductID, productName: p ? p.Name : r.ProductID,
       vendorId: r.VendorID, qty: Number(r.QtyOrdered), uom: r.UOM, received, remaining: Math.max(0, Number(r.QtyOrdered) - received),
       requestId: r.RequestID || "", status: r.Status === "CANCELLED" ? "CANCELLED" : received >= Number(r.QtyOrdered) ? "RECEIVED" : received > 0 ? "PARTIAL" : "ORDERED",
-      notes: r.Notes || "",
+      notes: r.Notes || "", deliveryLocationId: r.DeliveryLocationID || headOfficeId,
     };
   }).reverse();
 }

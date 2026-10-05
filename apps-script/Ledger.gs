@@ -156,9 +156,24 @@ function processRetailSale(payload) {
 function processStockReceive(payload) {
   var req = payload.data;
   var headOfficeLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
-  var locationId = req.locationId || headOfficeLocationId;
-  if (locationId !== headOfficeLocationId && appRole((getUser(payload.actor) || {}).Role) !== "Admin") {
-    throw new Error("FORBIDDEN: Goods receipts must enter Head Office stock.");
+
+  var order = null;
+  if (req.poId) {
+    order = listPurchaseOrders().find(function (o) { return o.orderId === req.poId; });
+    if (!order || order.productId !== req.productId || order.vendorId !== req.vendorId || ['CANCELLED','RECEIVED'].indexOf(order.status) >= 0) {
+      throw new Error('VALIDATION: Select an open order matching product and vendor.');
+    }
+  }
+
+  // An order's own chosen destination is the only source of truth for where it lands --
+  // never whatever the receive form happens to send -- so an order can never be mis-delivered
+  // by a receipt that names a different location.
+  var locationId = order ? order.deliveryLocationId : String(req.locationId || headOfficeLocationId);
+  if (!order && locationId !== headOfficeLocationId && !readAll('LISTS').some(function (v) { return v.Type === 'LOCATION' && v.Code === locationId && isTruthy(v.Active) && v.Extra; })) {
+    throw new Error('VALIDATION: Choose Head Office or an active studio to deliver to.');
+  }
+  if (locationId !== headOfficeLocationId && ['PurchaseCoordinator','Admin'].indexOf(appRole((getUser(payload.actor) || {}).Role)) < 0) {
+    throw new Error("FORBIDDEN: Only purchasing or management can receive stock directly into a studio.");
   }
 
   if (!req.productId) throw new Error("VALIDATION: No product selected.");
@@ -169,9 +184,7 @@ function processStockReceive(payload) {
   var qty = positiveQuantity(req.qty,product,false);
   if (qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
 
-  if(req.poId) {
-    var order=listPurchaseOrders().find(function(o){return o.orderId===req.poId;});
-    if(!order || order.productId!==req.productId || order.vendorId!==req.vendorId || ['CANCELLED','RECEIVED'].indexOf(order.status)>=0) throw new Error('VALIDATION: Select an open order matching product and vendor.');
+  if (order) {
     if(qty>order.remaining) throw new Error('VALIDATION: Received quantity exceeds the outstanding order.');
     if(order.uom!==(product.PurchaseUOM || product.IssueUOM)) throw new Error('VALIDATION: Product units changed since ordering. Ask management to reconcile this order.');
   }
