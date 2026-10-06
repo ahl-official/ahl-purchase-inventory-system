@@ -223,18 +223,21 @@ await t("city transfer: Satvik sends direct to a city with nobody based there, n
   eq(await stock(A(), bangalore.id), 5, "Bangalore after confirm");
 });
 
-await t("retail sale: sold by the piece (converted to stock units), requires a client, only sells Retail/Both products", async () => {
+await t("retail sale: sold by the piece (converted to stock units), requires a client and technician, only sells Retail/Both products", async () => {
+  const tech = state.cat.people.find((p) => p.role === "Technician");
+  eq(!!tech, true, "a technician exists");
   rejected(await call(HITESH, "stock.retailSale", { productId: C(), qty: 1 }), "VALIDATION", "no client name");
-  rejected(await call(HITESH, "stock.retailSale", { productId: C(), qty: 1, clientName: "Test" }), "VALIDATION", "no client phone");
-  rejected(await call(HITESH, "stock.retailSale", { productId: A(), qty: 1, clientName: "Test", clientPhone: "9999999999" }), "VALIDATION", "A is Consumable, not sellable");
+  rejected(await call(HITESH, "stock.retailSale", { productId: C(), qty: 1, clientName: "Test" }), "VALIDATION", "no technician");
+  rejected(await call(HITESH, "stock.retailSale", { productId: A(), qty: 1, clientName: "Test", clientPhone: "9999999999", recipientUserId: tech.id }), "VALIDATION", "A is Consumable, not sellable");
   // C is sold by the BTL (conversion 100 -> ML), not by the ml itself; top up Salon so 2 bottles fits.
   const topUp = okRes(await call(SATVIK, "stock.handover", { productId: C(), qty: 200, toUserId: state.hiteshId, toLocationId: state.SALON }), "top up: handover C to Salon");
   okRes(await call(HITESH, "stock.confirmHandover", { handoverId: topUp.handoverId, countedQty: 200 }), "top up: confirm");
   const before = await stock(C(), state.SALON);
-  const sale = okRes(await call(HITESH, "stock.retailSale", { productId: C(), qty: 2, clientName: "Priya Sharma", clientPhone: "9876543210", refNo: "INV-1" }), "retail sale (2 BTL)");
+  const sale = okRes(await call(HITESH, "stock.retailSale", { productId: C(), qty: 2, clientName: "Priya Sharma", clientPhone: "9876543210", refNo: "INV-1", recipientUserId: tech.id }), "retail sale (2 BTL)");
   eq(await stock(C(), state.SALON), before - 200, "Salon C after selling 2 bottles (2 x 100 ML conversion)");
   const hist = state.ops.history.find((h) => h.txnId === sale.txnId);
   eq(hist.type, "RETAIL_SALE", "ledger type");
+  eq(hist.personId, tech.id, "technician recorded");
   eq(hist.notes.includes("Priya Sharma") && hist.notes.includes("9876543210"), true, "client recorded in the ledger");
 });
 

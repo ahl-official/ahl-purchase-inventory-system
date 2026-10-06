@@ -124,8 +124,11 @@ function processRetailSale(payload) {
   var qtyBase = toBaseQty(product, qty, true);
   var clientName = String(req.clientName || "").trim();
   var clientPhone = String(req.clientPhone || "").trim();
+  var techId = String(req.recipientUserId || "").trim();
   if (!clientName) throw new Error("VALIDATION: Record who bought this.");
-  if (!clientPhone) throw new Error("VALIDATION: Record the client's phone number.");
+  if (!techId || !readAll("PEOPLE").some(function (r) { return r.UserID === techId && isTruthy(r.Active); })) {
+    throw new Error("VALIDATION: Select a technician.");
+  }
 
   var balance = computeAvailableBalance(req.productId, locationId);
   if (qtyBase > balance) {
@@ -133,14 +136,15 @@ function processRetailSale(payload) {
   }
 
   var txnId = nextId("TXN");
-  var notesParts = ["Client: " + clientName, "Phone: " + clientPhone];
+  var notesParts = ["Client: " + clientName];
+  if (clientPhone) notesParts.push("Phone: " + clientPhone);
   if (req.refNo) notesParts.push("Ref: " + String(req.refNo).trim());
   if (req.notes) notesParts.push(String(req.notes).trim());
 
   appendRecord("LEDGER", {
     TxnID: txnId, Date: new Date(), Type: "RETAIL_SALE", Direction: -1,
     ProductID: req.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
-    LocationID: locationId, Amount: qtyBase * (Number(product.Cost) || 0),
+    LocationID: locationId, PersonID: techId, Amount: qtyBase * (Number(product.Cost) || 0),
     Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | ")
   });
 
