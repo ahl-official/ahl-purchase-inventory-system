@@ -21,7 +21,7 @@ function getCatalogue() {
     }),
     // Explicit whitelist: never expose login or password fields.
     people: readAll('PEOPLE').filter(function (r) { return isTruthy(r.Active); }).map(function (r) { return { id:r.UserID, name:r.Name, role:appRole(r.Role) || r.Role, locationId:r.LocationID }; }),
-    categories:list('CATEGORY'), vendors:list('VENDOR'), locations:list('LOCATION'),
+    categories:list('CATEGORY'), vendors:list('VENDOR'), locations:list('LOCATION'), receivers:list('RECEIVER'),
     headOfficeLocationId:getConfig('HeadOfficeLocationID','LOC-01'), salonFloorLocationId:getConfig('SalonFloorLocationID','LOC-02'), dispatchLocationId:getConfig('DispatchLocationID','LOC-05'),
     approvalThreshold:getConfigNumber('ApprovalThreshold',5000)
   };
@@ -37,6 +37,7 @@ function listPurchaseOrders() {
 }
 
 function processOrderCreate(payload) {
+  if (payload.data && payload.data.lines) return processOrderCreateLines(payload);
   requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
   var r = payload.data || {}, p = getProduct(r.productId);
   if (!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
@@ -46,6 +47,7 @@ function processOrderCreate(payload) {
   // later as always), or straight to an out-of-town studio, skipping that hop for this order.
   var headOfficeId = getConfig('HeadOfficeLocationID','LOC-01');
   var deliveryLocationId = String(r.locationId || headOfficeId);
+  if (deliveryLocationId === getConfig('DispatchLocationID','LOC-05')) throw new Error('VALIDATION: Dispatch is not a delivery destination.');
   if (deliveryLocationId !== headOfficeId && !readAll('LISTS').some(function (v) { return v.Type === 'LOCATION' && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra; })) {
     throw new Error('VALIDATION: Choose Head Office or an active studio to deliver to.');
   }
@@ -60,6 +62,54 @@ function processOrderCreate(payload) {
   if(r.requestId) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
   audit(payload.actor,'order.create',id,r);
   return {orderId:id, deliveryLocationId:deliveryLocationId};
+}
+
+/** One vendor, several products. Does not change stock. */
+function processOrderCreateLines(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  var r = payload.data || {};
+  if (r.requestId) throw new Error('VALIDATION: An order from a request is one product.');
+  if (!r.lines || !r.lines.length) throw new Error('VALIDATION: Add at least one product.');
+  if (!readAll('LISTS').some(function (v) { return v.Type === 'VENDOR' && v.Code === r.vendorId && isTruthy(v.Active); })) throw new Error('VALIDATION: Select a vendor.');
+  var headOfficeId = getConfig('HeadOfficeLocationID','LOC-01');
+  var deliveryLocationId = String(r.locationId || headOfficeId);
+  if (deliveryLocationId !== headOfficeId && !readAll('LISTS').some(function (v) { return v.Type === 'LOCATION' && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra; })) {
+    throw new Error('VALIDATION: Choose Head Office or an active studio to deliver to.');
+  }
+  var dispatchId = getConfig('DispatchLocationID','LOC-05');
+  if (deliveryLocationId === dispatchId) throw new Error('VALIDATION: Dispatch is not a delivery destination.');
+  ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
+  var prepared = r.lines.map(function (line) {
+    var p = getProduct(line.productId);
+    if (!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
+    var qty = positiveQuantity(line.qty, p, false);
+    var price = line.unitPrice === '' || line.unitPrice === undefined || line.unitPrice === null ? '' : Number(line.unitPrice);
+    if (price !== '' && (!isFinite(price) || price < 0)) throw new Error('VALIDATION: Enter a valid unit price.');
+    var notes = [String(r.notes || '').trim(), price === '' ? '' : 'Unit price ₹' + price].filter(Boolean).join(' | ');
+    return { product: p, productId: line.productId, qty: qty, notes: notes };
+  });
+  var ids = prepared.map(function (line) {
+    var id = nextId('PO');
+    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:new Date(),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId});
+    return id;
+  });
+  audit(payload.actor,'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});
+  return {orderIds:ids, deliveryLocationId:deliveryLocationId};
+}
+
+function processListAdd(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  var r = payload.data || {};
+  var type = String(r.type || '');
+  if (type !== 'VENDOR' && type !== 'RECEIVER') throw new Error('VALIDATION: Unsupported list.');
+  var name = String(r.name || '').trim();
+  if (name.length < 2) throw new Error('VALIDATION: Enter a name.');
+  var existing = readAll('LISTS').filter(function (v) { return v.Type === type && isTruthy(v.Active) && String(v.Name || '').trim().toLowerCase() === name.toLowerCase(); })[0];
+  if (existing) return {id:existing.Code, name:existing.Name};
+  var id = nextId(type === 'VENDOR' ? 'VND' : 'RCV');
+  appendRecord('LISTS',{Type:type, Code:id, Name:name, Extra:'', Active:true});
+  audit(payload.actor,'list.add',id,{type:type, name:name});
+  return {id:id, name:name};
 }
 
 function updateRecordFields(name, key, id, changes) {

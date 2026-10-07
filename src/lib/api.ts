@@ -26,6 +26,7 @@ export type AppsScriptAction =
   | "stock.adjust"
   | "product.create"
   | "product.setVendor"
+  | "list.add"
   | "inventoryReport.read"
   | "auth.login"
   | "stock.issue"

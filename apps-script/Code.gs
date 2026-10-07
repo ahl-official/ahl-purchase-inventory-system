@@ -82,6 +82,7 @@ function doPost(e) {
         'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin'],
         'product.create':['PurchaseCoordinator','Admin'],
         'product.setVendor':['PurchaseCoordinator','Admin'],
+        'list.add':['PurchaseCoordinator','Admin'],
         'inventoryReport.read':['PurchaseCoordinator','Admin']
       };
       if(payload.action !== 'auth.login') {
@@ -118,6 +119,7 @@ function doPost(e) {
         case 'stock.adjust': result=processStockAdjustment(payload); break;
         case 'product.create': result=processProductCreate(payload); break;
         case 'product.setVendor': result=processProductSetVendor(payload); break;
+        case 'list.add': result=processListAdd(payload); break;
         case 'inventoryReport.read': result=getInventoryReport(payload); break;
         case "auth.login":
           result = processAuthLogin(payload);

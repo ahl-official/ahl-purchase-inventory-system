@@ -190,7 +190,7 @@ function getCatalogue(ctx: Ctx) {
       cost: Number(r.Cost) || 0, reorderLevel: Number(r.ReorderLevel) || 0, balance: null,
     })),
     people: ctx.people.filter((r) => isTruthy(r.Active)).map((r) => ({ id: r.UserID, name: r.Name, role: appRole(r.Role) || r.Role, locationId: r.LocationID })),
-    categories: list("CATEGORY"), vendors: list("VENDOR"), locations: list("LOCATION"),
+    categories: list("CATEGORY"), vendors: list("VENDOR"), locations: list("LOCATION"), receivers: list("RECEIVER"),
     headOfficeLocationId: getConfig(ctx, "HeadOfficeLocationID", "LOC-01"),
     salonFloorLocationId: getConfig(ctx, "SalonFloorLocationID", "LOC-02"),
     dispatchLocationId: getConfig(ctx, "DispatchLocationID", "LOC-05"),

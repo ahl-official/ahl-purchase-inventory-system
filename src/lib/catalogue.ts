@@ -4,8 +4,8 @@ import { postAction } from './api-client';
 export interface Product { id:string; name:string; categoryId:string; vendorId?:string; productType:string; uom:string; purchaseUom:string; conversion:number; cost:number; reorderLevel:number; }
 export interface Person { id:string; name:string; role:string; locationId:string; }
 export interface Lookup { id:string; name:string; unit:string; dot:string; }
-export interface Catalogue { products:Product[]; people:Person[]; categories:Lookup[]; vendors:Lookup[]; locations:Lookup[]; headOfficeLocationId:string; salonFloorLocationId:string; dispatchLocationId:string; approvalThreshold:number; }
-export const EMPTY_CATALOGUE: Catalogue = { products:[],people:[],categories:[],vendors:[],locations:[],headOfficeLocationId:'LOC-01',salonFloorLocationId:'LOC-02',dispatchLocationId:'LOC-05',approvalThreshold:5000 };
+export interface Catalogue { products:Product[]; people:Person[]; categories:Lookup[]; vendors:Lookup[]; receivers?:Lookup[]; locations:Lookup[]; headOfficeLocationId:string; salonFloorLocationId:string; dispatchLocationId:string; approvalThreshold:number; }
+export const EMPTY_CATALOGUE: Catalogue = { products:[],people:[],categories:[],vendors:[],receivers:[],locations:[],headOfficeLocationId:'LOC-01',salonFloorLocationId:'LOC-02',dispatchLocationId:'LOC-05',approvalThreshold:5000 };
 export function useCatalogue() {
   const [catalogue,setCatalogue]=useState(EMPTY_CATALOGUE);
   useEffect(()=>{let active=true; void postAction<Catalogue>('catalogue.read',{}).then(r=>{if(active && r.ok && r.data)setCatalogue(r.data);});return()=>{active=false;};},[]);

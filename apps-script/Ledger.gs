@@ -174,6 +174,7 @@ function processStockReceive(payload) {
   // never whatever the receive form happens to send -- so an order can never be mis-delivered
   // by a receipt that names a different location.
   var locationId = order ? order.deliveryLocationId : String(req.locationId || headOfficeLocationId);
+  if (!order && locationId === getConfig('DispatchLocationID','LOC-05')) throw new Error('VALIDATION: Dispatch is not a delivery destination.');
   if (!order && locationId !== headOfficeLocationId && !readAll('LISTS').some(function (v) { return v.Type === 'LOCATION' && v.Code === locationId && isTruthy(v.Active) && v.Extra; })) {
     throw new Error('VALIDATION: Choose Head Office or an active studio to deliver to.');
   }
@@ -265,10 +266,11 @@ function processStockReceiveLines(payload) {
   var req = payload.data;
   var headOfficeLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
   if (req.poId) throw new Error("VALIDATION: A multi-product bill cannot be tied to one order.");
-  if (!req.vendorId) throw new Error("VALIDATION: Select a vendor.");
+  if (!req.vendorId || !readAll("LISTS").some(function (v) { return v.Type === "VENDOR" && v.Code === req.vendorId && isTruthy(v.Active); })) throw new Error("VALIDATION: Select a vendor.");
   if (!req.lines.length) throw new Error("VALIDATION: Add at least one product.");
 
   var locationId = String(req.locationId || headOfficeLocationId);
+  if (locationId === getConfig("DispatchLocationID", "LOC-05")) throw new Error("VALIDATION: Dispatch is not a delivery destination.");
   if (locationId !== headOfficeLocationId && !readAll("LISTS").some(function (v) { return v.Type === "LOCATION" && v.Code === locationId && isTruthy(v.Active) && v.Extra; })) {
     throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
   }
@@ -283,10 +285,16 @@ function processStockReceiveLines(payload) {
     var qty = positiveQuantity(line.qty, product, false);
     var qtyBase = toBaseQty(product, qty, true);
     var rawAmount = line.amount;
-    var amount = rawAmount === "" || rawAmount === undefined || rawAmount === null ? qtyBase * (Number(product.Cost) || 0) : Number(rawAmount);
+    var amount = rawAmount === "" || rawAmount === undefined || rawAmount === null ? 0 : Number(rawAmount);
     if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
     return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount };
   });
+
+  var gst = req.gstPercent === "" || req.gstPercent === undefined || req.gstPercent === null ? "" : Number(req.gstPercent);
+  if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
+  var billGst = gst === "" ? "" : Math.round(prepared.reduce(function (sum, line) { return sum + line.amount; }, 0) * gst) / 100;
+  ensureColumn("LEDGER", "GSTPercent");
+  ensureColumn("LEDGER", "GSTAmount");
 
   var firstTxn = nextId("TXN");
   var bill = null;
@@ -300,9 +308,9 @@ function processStockReceiveLines(payload) {
       TxnID: i === 0 ? firstTxn : nextId("TXN"),
       Date: now, Type: "RECEIPT", Direction: 1,
       ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
-      LocationID: locationId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.amount,
+      LocationID: locationId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.amount, GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
       BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
-      Actor: payload.actor, Status: "RECEIVED", Notes: req.notes || ""
+      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", gst === "" ? "" : "GST " + gst + "% ₹" + billGst].filter(Boolean).join(" | ")
     };
   });
   appendRecords("LEDGER", rows);
