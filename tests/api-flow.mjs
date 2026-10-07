@@ -270,6 +270,22 @@ await t("studio request reaches Satvik with requester and vendor picker data", a
   okRes(await call(SATVIK, "order.cancel", { orderId: o.orderId, notes: "test cleanup" }), "cancel");
 });
 
+await t("one vendor bill receives several products under one photo", async () => {
+  rejected(await call(SATVIK, "stock.receive", { vendorId: state.vendor, lines: [] }), "VALIDATION", "no lines");
+  const beforeA = await stock(A(), state.HO);
+  const beforeB = await stock(B(), state.HO);
+  const r = okRes(await call(SATVIK, "stock.receive", {
+    vendorId: state.vendor, invoiceNo: "T-MULTI", locationId: state.HO,
+    lines: [{ productId: A(), qty: 1 }, { productId: B(), qty: 2, amount: 50 }],
+    photo: { base64: TINY_JPEG, mimeType: "image/jpeg", fileName: "multi.jpg", sizeBytes: 100 },
+  }), "multi receive");
+  eq(r.txnIds.length, 2, "two ledger rows");
+  eq(r.txnIds[0] !== r.txnIds[1], true, "distinct ids");
+  eq(await stock(A(), state.HO), beforeA + 60, "A + 1 tube");
+  eq(await stock(B(), state.HO), beforeB + 500, "B + 2 bottles");
+  if (!r.billUrl) throw new Error("shared bill missing");
+});
+
 console.log(`\n${pass} passed, ${fail} failed.${slow.length ? ` Slow calls (>20s): ${slow.join(", ")}` : ""}`);
 if (fail) console.log("Failed:\n - " + failures.join("\n - "));
 console.log(`Dummy data left in the sheet: 3 products named "TEST-${RUN} ...".`);

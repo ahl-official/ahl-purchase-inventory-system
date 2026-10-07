@@ -159,6 +159,7 @@ function processRetailSale(payload) {
  */
 function processStockReceive(payload) {
   var req = payload.data;
+  if (req.lines) return processStockReceiveLines(payload);
   var headOfficeLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
 
   var order = null;
@@ -257,6 +258,56 @@ function processStockReceive(payload) {
     billViewUrl: bill ? bill.downloadUrl : "",
     productPhotoUrl: productPhoto ? productPhoto.url : ""
   };
+}
+
+/** One vendor bill, many products. One photo, one ledger row per product. */
+function processStockReceiveLines(payload) {
+  var req = payload.data;
+  var headOfficeLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
+  if (req.poId) throw new Error("VALIDATION: A multi-product bill cannot be tied to one order.");
+  if (!req.vendorId) throw new Error("VALIDATION: Select a vendor.");
+  if (!req.lines.length) throw new Error("VALIDATION: Add at least one product.");
+
+  var locationId = String(req.locationId || headOfficeLocationId);
+  if (locationId !== headOfficeLocationId && !readAll("LISTS").some(function (v) { return v.Type === "LOCATION" && v.Code === locationId && isTruthy(v.Active) && v.Extra; })) {
+    throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
+  }
+  if (locationId !== headOfficeLocationId && ["PurchaseCoordinator", "Admin"].indexOf(appRole((getUser(payload.actor) || {}).Role)) < 0) {
+    throw new Error("FORBIDDEN: Only purchasing or management can receive stock directly into a studio.");
+  }
+
+  var prepared = req.lines.map(function (line) {
+    if (!line.productId) throw new Error("VALIDATION: No product selected.");
+    var product = getProduct(line.productId);
+    if (!product) throw new Error("UNKNOWN_PRODUCT: " + line.productId + " is not in PRODUCTS.");
+    var qty = positiveQuantity(line.qty, product, false);
+    var qtyBase = toBaseQty(product, qty, true);
+    var rawAmount = line.amount;
+    var amount = rawAmount === "" || rawAmount === undefined || rawAmount === null ? qtyBase * (Number(product.Cost) || 0) : Number(rawAmount);
+    if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
+    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount };
+  });
+
+  var firstTxn = nextId("TXN");
+  var bill = null;
+  if (req.photo && req.photo.base64) {
+    bill = saveBillPhoto(req.photo, { kind: "BILL", txnId: firstTxn, actor: payload.actor, vendorId: req.vendorId });
+  }
+
+  var now = new Date();
+  var rows = prepared.map(function (line, i) {
+    return {
+      TxnID: i === 0 ? firstTxn : nextId("TXN"),
+      Date: now, Type: "RECEIPT", Direction: 1,
+      ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
+      LocationID: locationId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.amount,
+      BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
+      Actor: payload.actor, Status: "RECEIVED", Notes: req.notes || ""
+    };
+  });
+  appendRecords("LEDGER", rows);
+  audit(payload.actor, "stock.receive", firstTxn, redactForAudit(req));
+  return { txnIds: rows.map(function (r) { return r.TxnID; }), billUrl: bill ? bill.url : "" };
 }
 
 /**
