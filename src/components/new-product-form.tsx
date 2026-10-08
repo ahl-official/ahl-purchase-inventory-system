@@ -17,7 +17,7 @@ const STOCK_UNITS = ['ML', 'GM', 'PCS', 'ROLL', 'MTR', 'KG'];
 export function NewProductForm({ catalogue, onCreated, onPrintLabel }: { catalogue: Catalogue; onCreated: () => void; onPrintLabel: (productId: string) => void }) {
   const [name, setName] = useState(''), [brand, setBrand] = useState(''), [type, setType] = useState('Consumable');
   const [purchaseUom, setPurchaseUom] = useState('TUBE'), [issueUom, setIssueUom] = useState('GM'), [conv, setConv] = useState('');
-  const [categoryId, setCategoryId] = useState(''), [cost, setCost] = useState(''), [gst, setGst] = useState('0'), [vendorId, setVendorId] = useState(''), [reorder, setReorder] = useState('');
+  const [categoryId, setCategoryId] = useState(''), [cost, setCost] = useState(''), [gst, setGst] = useState('0'), [vendorId, setVendorId] = useState('');
   const unit = catalogue.categories.find(c => c.id === categoryId)?.unit;
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [created, setCreated] = useState<{ productId: string; name: string } | null>(null);
   const same = purchaseUom === issueUom;
@@ -25,10 +25,12 @@ export function NewProductForm({ catalogue, onCreated, onPrintLabel }: { catalog
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true); setError('');
-    const r = await postAction<{ productId: string; name: string }>('product.create', { name, brand, productType: type, purchaseUom, issueUom, convFactor: same ? 1 : Number(conv), categoryId, cost: cost === '' ? '' : Number(cost), gstPercent: Number(gst || 0), vendorId, reorderLevel: Number(reorder || 0) });
+    // Staff know what one pack cost on the invoice, not the per-stock-unit math -- ask for that and divide here.
+    const costPerUnit = cost === '' ? '' : Number(cost) / (same ? 1 : Number(conv) || 1);
+    const r = await postAction<{ productId: string; name: string }>('product.create', { name, brand, productType: type, purchaseUom, issueUom, convFactor: same ? 1 : Number(conv), categoryId, cost: costPerUnit, gstPercent: Number(gst || 0), vendorId, reorderLevel: 0 });
     setBusy(false);
     if (!r.ok) return setError(r.message);
-    setCreated(r.data); setName(''); setBrand(''); setConv(''); setCost(''); setReorder('');
+    setCreated(r.data); setName(''); setBrand(''); setConv(''); setCost('');
     onCreated();
   };
 
@@ -47,10 +49,9 @@ export function NewProductForm({ catalogue, onCreated, onPrintLabel }: { catalog
         <span className="text-xs text-muted-foreground">{conv ? `1 ${purchaseUom} = ${conv} ${issueUom}` : 'For a 5 L can enter 5000 and choose ML.'}</span></label>}
       <label className="grid gap-2 text-sm">Category<Select required value={categoryId} onChange={e => setCategoryId(e.target.value)}><option value="">Select category</option>{catalogue.categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
         <span className="text-xs text-muted-foreground">{unit ? `Business unit: ${unit}` : 'The category decides the business unit in finance reports.'}</span></label>
-      <label className="grid gap-2 text-sm">Cost per {issueUom} (₹)<TextInput required type="number" min="0" step="any" value={cost} onChange={e => setCost(e.target.value)} placeholder="e.g. 12.5" />
-        <span className="text-xs text-muted-foreground">Per stock unit, not per pack.{cost && !same && conv ? ` One ${purchaseUom} ≈ ₹${(Number(cost) * Number(conv)).toFixed(2)}.` : ''}</span></label>
+      <label className="grid gap-2 text-sm">Cost per {purchaseUom} (₹)<TextInput required type="number" min="0" step="any" value={cost} onChange={e => setCost(e.target.value)} placeholder="e.g. 500" />
+        <span className="text-xs text-muted-foreground">The price on the invoice for one {purchaseUom}.{cost && !same && conv ? ` = ₹${(Number(cost) / Number(conv)).toFixed(4)} per ${issueUom}.` : ''}</span></label>
       <label className="grid gap-2 text-sm">GST % (optional)<TextInput type="number" min="0" max="28" step="any" value={gst} onChange={e => setGst(e.target.value)} /></label>
-      <label className="grid gap-2 text-sm">Reorder level, in {issueUom} (optional)<TextInput type="number" min="0" step="any" value={reorder} onChange={e => setReorder(e.target.value)} /></label>
       <label className="grid gap-2 text-sm sm:col-span-2">Main vendor (optional)<Select value={vendorId} onChange={e => setVendorId(e.target.value)}><option value="">None</option>{catalogue.vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</Select></label>
       <div className="sm:col-span-2"><Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy}>{busy && <Loader2 className="size-4 animate-spin" />}Add product</Button></div>
     </form>
