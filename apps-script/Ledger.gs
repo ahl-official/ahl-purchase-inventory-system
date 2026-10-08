@@ -245,7 +245,7 @@ function processStockReceive(payload) {
     ReceivedByUserId: req.receivedByUserId || "",
     Actor: payload.actor,
     Status: "RECEIVED",
-    Notes: req.notes || ""
+    Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : ""].filter(Boolean).join(" | ")
   });
 
   audit(payload.actor, "stock.receive", txnId, redactForAudit(req));
