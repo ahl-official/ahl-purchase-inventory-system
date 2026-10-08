@@ -82,7 +82,7 @@ function doPost(e) {
         'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin'],
         'product.create':['PurchaseCoordinator','Admin'],
         'product.setVendor':['PurchaseCoordinator','Admin'],
-        'product.editUnit':['Admin'],
+        'product.editUnit':['PurchaseCoordinator','ProductDistributor','Admin'],
         'list.add':['PurchaseCoordinator','Admin'],
         'inventoryReport.read':['PurchaseCoordinator','Admin']
       };

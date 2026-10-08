@@ -277,7 +277,8 @@ function processProductSetVendor(payload) {
 }
 
 /**
- * Corrects a genuine mistake in how a product is set up. Admin only.
+ * Corrects a genuine mistake in how a product is set up. Open to Purchase and Salon logins too,
+ * not just Admin -- the real safety here is the zero-history check below, not who's asking.
  *
  * Type (Consumable/Retail/Both) can always change -- it only decides which screens the product
  * shows up on, nothing in past history depends on it. The pack size/unit is different: once
@@ -286,7 +287,7 @@ function processProductSetVendor(payload) {
  * already on the product (a no-op) or the product has zero ledger rows.
  */
 function processProductEditUnit(payload) {
-  requireAppRole(payload.actor,['Admin']);
+  requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
   var r=payload.data || {};
   var p=getProduct(r.productId);
   if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');
