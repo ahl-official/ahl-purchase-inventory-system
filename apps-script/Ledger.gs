@@ -248,6 +248,12 @@ function processStockReceive(payload) {
     Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : ""].filter(Boolean).join(" | ")
   });
 
+  // The price actually paid is the most current cost there is -- keep the catalogue in step with
+  // real deliveries instead of asking anyone to maintain it separately.
+  if (req.amount && qtyBase > 0) {
+    updateRecordFields("PRODUCTS", "ProductID", req.productId, { Cost: amount / qtyBase });
+  }
+
   audit(payload.actor, "stock.receive", txnId, redactForAudit(req));
 
   return {
@@ -285,9 +291,10 @@ function processStockReceiveLines(payload) {
     var qty = positiveQuantity(line.qty, product, false);
     var qtyBase = toBaseQty(product, qty, true);
     var rawAmount = line.amount;
-    var amount = rawAmount === "" || rawAmount === undefined || rawAmount === null ? 0 : Number(rawAmount);
+    var hasAmount = rawAmount !== "" && rawAmount !== undefined && rawAmount !== null;
+    var amount = hasAmount ? Number(rawAmount) : 0;
     if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
-    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount };
+    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount, hasAmount: hasAmount };
   });
 
   var gst = req.gstPercent === "" || req.gstPercent === undefined || req.gstPercent === null ? "" : Number(req.gstPercent);
@@ -314,6 +321,16 @@ function processStockReceiveLines(payload) {
     };
   });
   appendRecords("LEDGER", rows);
+
+  // Same reasoning as the single-product receive: a real price just paid is the most current
+  // cost there is. Only lines where an amount was actually typed move the catalogue -- a line
+  // left blank must never silently zero out an existing cost.
+  prepared.forEach(function (line) {
+    if (line.hasAmount && line.qtyBase > 0) {
+      updateRecordFields("PRODUCTS", "ProductID", line.productId, { Cost: line.amount / line.qtyBase });
+    }
+  });
+
   audit(payload.actor, "stock.receive", firstTxn, redactForAudit(req));
   return { txnIds: rows.map(function (r) { return r.TxnID; }), billUrl: bill ? bill.url : "" };
 }

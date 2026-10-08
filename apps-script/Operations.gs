@@ -195,8 +195,10 @@ function processProductCreate(payload) {
   if(purchaseUom===issueUom && conv!==1) throw new Error('VALIDATION: Same purchase and stock unit must contain exactly 1.');
   var lists=readAll('LISTS'), has=function(type,code){return lists.some(function(v){return v.Type===type && v.Code===code && isTruthy(v.Active);});};
   if(!has('CATEGORY',r.categoryId)) throw new Error('VALIDATION: Choose the product category.');
-  var cost=Number(r.cost);
-  if(r.cost==='' || r.cost==null || !isFinite(cost) || cost<0) throw new Error('VALIDATION: Enter the cost per '+issueUom+'.');
+  // No cost is asked here -- it's set from what's actually paid on the first delivery (see
+  // processStockReceive / processStockReceiveLines), and kept current from every delivery after that.
+  var cost=r.cost==='' || r.cost==null ? 0 : Number(r.cost);
+  if(!isFinite(cost) || cost<0) throw new Error('VALIDATION: Cost cannot be negative.');
   var gst=Number(r.gstPercent || 0), reorder=Number(r.reorderLevel || 0);
   if(!isFinite(gst) || gst<0 || gst>28) throw new Error('VALIDATION: GST must be between 0 and 28.');
   if(!isFinite(reorder) || reorder<0) throw new Error('VALIDATION: Reorder level cannot be negative.');
@@ -272,4 +274,42 @@ function processProductSetVendor(payload) {
   updateRecordFields('PRODUCTS','ProductID',r.productId,{VendorID:r.vendorId});
   audit(payload.actor,'product.setVendor',r.productId,r);
   return {productId:r.productId,vendorId:r.vendorId};
+}
+
+/**
+ * Corrects a genuine mistake in how a product is set up. Admin only.
+ *
+ * Type (Consumable/Retail/Both) can always change -- it only decides which screens the product
+ * shows up on, nothing in past history depends on it. The pack size/unit is different: once
+ * anything real has been bought, issued or sold under it, changing it would silently reinterpret
+ * all of that history, so it's only allowed while the request's unit actually matches what's
+ * already on the product (a no-op) or the product has zero ledger rows.
+ */
+function processProductEditUnit(payload) {
+  requireAppRole(payload.actor,['Admin']);
+  var r=payload.data || {};
+  var p=getProduct(r.productId);
+  if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');
+  var changes={};
+  if(r.productType) {
+    if(['Consumable','Retail','Both'].indexOf(r.productType)<0) throw new Error('VALIDATION: Choose Consumable, Retail or Both.');
+    if(r.productType!==p.ProductType) { allowBothProductType(); changes.ProductType=r.productType; }
+  }
+  if(r.purchaseUom || r.issueUom || r.convFactor!=null) {
+    var uom=function(v,label){var u=String(v || '').trim().toUpperCase();if(!/^[A-Z]{1,10}$/.test(u)) throw new Error('VALIDATION: Choose the '+label+'.');return u;};
+    var purchaseUom=uom(r.purchaseUom || p.PurchaseUOM,'purchase unit'), issueUom=uom(r.issueUom || p.IssueUOM,'stock unit'), conv=Number(r.convFactor!=null ? r.convFactor : p.ConvFactor);
+    if(!isFinite(conv) || conv<=0) throw new Error('VALIDATION: Enter how much stock one purchase unit contains.');
+    if(purchaseUom===issueUom && conv!==1) throw new Error('VALIDATION: Same purchase and stock unit must contain exactly 1.');
+    var unitChanged = purchaseUom!==p.PurchaseUOM || issueUom!==p.IssueUOM || conv!==Number(p.ConvFactor);
+    if(unitChanged) {
+      if(readAll('LEDGER').some(function(l){return l.ProductID===r.productId;})) {
+        throw new Error('VALIDATION: This product already has stock history; its unit cannot be changed. Add a new product instead.');
+      }
+      changes.PurchaseUOM=purchaseUom; changes.IssueUOM=issueUom; changes.ConvFactor=conv;
+    }
+  }
+  if(!Object.keys(changes).length) throw new Error('VALIDATION: Nothing to change.');
+  updateRecordFields('PRODUCTS','ProductID',r.productId,changes);
+  audit(payload.actor,'product.editUnit',r.productId,r);
+  return {productId:r.productId};
 }
