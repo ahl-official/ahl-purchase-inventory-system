@@ -13,7 +13,7 @@ import { QrLabels } from './qr-labels';
 import { MonthlyReport } from './monthly-report';
 import { postAction } from '@/lib/api-client';
 import { downloadCsv } from '@/lib/csv';
-import { EMPTY_CATALOGUE, packLabel, type Catalogue } from '@/lib/catalogue';
+import { EMPTY_CATALOGUE, norm, packLabel, type Catalogue } from '@/lib/catalogue';
 import type { AppsScriptAction } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -52,7 +52,7 @@ export function OperationsHub({office}:{office:boolean}) {
     setNotice('Saved. You can enter the next one.'+warn);setForm(null);void load(true);return true;};
   const catLabel=(id:string)=>{const k=c.categories.find(x=>x.id===id);return k?`${k.name}${k.unit?` (${k.unit})`:''}`:'';};
   const balance=(id:string)=>{const s=data?.dashboard.stock.find(s=>s.productId===id);return (office?s?.headOfficeAvailable:(s?.locationBalances?.[loc]??s?.salonFloorBalance))||0;};
-  const products=c.products.filter(p=>(!type||p.productType===type)&&p.name.toLowerCase().includes(search.toLowerCase())&&(!availableOnly||balance(p.id)>0)).sort((a,b)=>balance(b.id)-balance(a.id)||a.name.localeCompare(b.name));
+  const products=c.products.filter(p=>(!type||p.productType===type)&&norm(p.name).includes(norm(search))&&(!availableOnly||balance(p.id)>0)).sort((a,b)=>balance(b.id)-balance(a.id)||a.name.localeCompare(b.name));
   const pending=data?.dashboard.pendingHandovers||[],history=(data?.history||[]).filter(h=>h.locationId===loc);
   const exportHistory=()=>downloadCsv([['Date','Product','Type','Qty','Unit','Person','Status','Notes'],...history.map(h=>[h.date,c.products.find(p=>p.id===h.productId)?.name||h.productId,h.type,h.qty,h.uom,c.people.find(p=>p.id===h.personId)?.name||h.personId,h.status,h.notes])],`ahl-${office?'head-office':'salon-floor'}-history.csv`);
   const noteField=(id:string,title:string)=><Field title={title}><TextInput value={notes[id]||''} onChange={e=>setNotes({...notes,[id]:e.target.value})}/></Field>;

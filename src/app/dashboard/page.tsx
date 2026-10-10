@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/table";
 import { postAction } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { useCatalogue } from '@/lib/catalogue';
+import { norm, useCatalogue } from '@/lib/catalogue';
 import { downloadCsv } from '@/lib/csv';
 
 interface StockRow {
@@ -137,10 +137,10 @@ export default function DashboardPage() {
   }, [load]);
 
   const stock = useMemo(() => {
-    const query = stockQuery.trim().toLowerCase();
+    const query = norm(stockQuery.trim());
     return [...(data?.stock ?? [])]
       .filter((row) => !categoryFilter || row.categoryId === categoryFilter)
-      .filter((row) => !query || row.name.toLowerCase().includes(query))
+      .filter((row) => !query || norm(row.name).includes(query))
       .sort((a, b) => {
         // The meeting requirement is explicit: usable stock stays on top.
         const availableOrder = Number(b.custodyBalance > 0) - Number(a.custodyBalance > 0);

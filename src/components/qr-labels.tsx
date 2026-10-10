@@ -6,7 +6,7 @@ import QRCode from "qrcode";
 import { Printer, Search } from "lucide-react";
 import { Panel, Select, TextInput } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
-import type { Product } from "@/lib/catalogue";
+import { norm, type Product } from "@/lib/catalogue";
 
 // Label sizes in millimetres and points: tubes are small, bottles medium, tubs and cans large.
 const SIZES = {
@@ -30,7 +30,7 @@ export function QrLabels({ products, preset }: { products: Product[]; preset: { 
 
   const sizeOf = (p: Product) => sizes[p.id] ?? suggest(p);
   const shown = products
-    .filter((p) => (!type || p.productType === type) && p.name.toLowerCase().includes(search.toLowerCase()))
+    .filter((p) => (!type || p.productType === type) && norm(p.name).includes(norm(search)))
     .sort((a, b) => Number(b.id === preset?.id) - Number(a.id === preset?.id) || a.name.localeCompare(b.name));
   const total = Object.values(copies).reduce((s, n) => s + (n || 0), 0);
 

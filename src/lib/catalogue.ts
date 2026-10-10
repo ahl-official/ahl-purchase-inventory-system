@@ -14,7 +14,7 @@ export function useCatalogue() {
 
 // Ignores hyphens, spaces and other punctuation so "C 22" finds "C-22 Solvent" -- people don't
 // type a product's exact punctuation, and a product search that requires it finds nothing.
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+export const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 /** Product picker order: typing shows only matches (the vendor's first); otherwise the chosen vendor's products, products with no vendor, other vendors. Nothing is hidden. When balanceOf is given, zero-stock products sink to the bottom of each group instead of being removed. */
 export function groupProducts(products: Product[], vendors: Lookup[], vendorId: string, query: string, balanceOf?: (p: Product) => number) {
