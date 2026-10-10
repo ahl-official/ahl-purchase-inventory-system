@@ -359,6 +359,7 @@ function processStockReceiveLines(payload) {
  */
 function processPurchaseRequest(payload) {
   var req = payload.data;
+  if (req.lines) return processPurchaseRequestLines(payload);
   var newProductName = String(req.newProductName || "").trim();
   var requestSource = String(req.source || "APP").trim().toUpperCase();
   if (["APP", "WHATSAPP", "CALL"].indexOf(requestSource) === -1) {
@@ -444,6 +445,53 @@ function processPurchaseRequest(payload) {
   };
 }
 
+/** Several catalogue products, one reason. Does not change stock. One request row per product. */
+function processPurchaseRequestLines(payload) {
+  var req = payload.data || {};
+  if (String(req.newProductName || "").trim()) throw new Error("VALIDATION: A product that is not in the list yet is its own request.");
+  if (!req.lines || !req.lines.length) throw new Error("VALIDATION: Add at least one product.");
+  if (!String(req.requestedByUserId || "").trim()) throw new Error("VALIDATION: Record who requested the product.");
+  if (String(req.notes || "").trim().length < 3) throw new Error("VALIDATION: Add a short reason for the request.");
+  var requestSource = String(req.source || "APP").trim().toUpperCase();
+  if (["APP", "WHATSAPP", "CALL"].indexOf(requestSource) === -1) throw new Error("VALIDATION: Request source must be App, WhatsApp or Call.");
+
+  var seen = {};
+  var prepared = req.lines.map(function (line) {
+    if (!line.productId) throw new Error("VALIDATION: No product selected.");
+    if (seen[line.productId]) throw new Error("VALIDATION: That product is already on this request. Increase its quantity.");
+    seen[line.productId] = true;
+    var product = getProduct(line.productId);
+    if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+    var qty = positiveQuantity(line.qty, product, false);
+    var est = qty * (Number(product.Cost) || 0);
+    return { productId: line.productId, qty: qty, est: est };
+  });
+  var totalEst = Number(req.estimatedValue) || prepared.reduce(function (sum, line) { return sum + line.est; }, 0);
+  var threshold = getConfigNumber("ApprovalThreshold", 5000);
+  var requesterRole = appRole((getUser(payload.actor) || {}).Role);
+  var approvedBy = "";
+  var status;
+  if (requesterRole === "ProductDistributor") {
+    status = "PENDING_APPROVAL";
+  } else {
+    approvedBy = String(req.approvedBy || "").trim();
+    if (totalEst >= threshold && !approvedBy) throw new Error("VALIDATION: This is over the ₹" + threshold + " threshold — record who approved it before logging.");
+    status = "OPEN";
+  }
+  var ids = prepared.map(function (line) {
+    var requestId = nextId("PR");
+    appendRecord("REQUESTS", {
+      RequestID: requestId, Date: new Date(), ProductID: line.productId, NewProductName: "",
+      Qty: line.qty, RequestedBy: req.requestedByUserId || "", Urgency: req.urgency || "Normal",
+      EstValue: line.est, Status: status, ApprovedBy: approvedBy, ApprovedAt: approvedBy ? new Date() : "",
+      Actor: payload.actor, Notes: req.notes || "", Source: requestSource
+    });
+    return requestId;
+  });
+  audit(payload.actor, "purchase.request", ids[0], { count: ids.length, estValue: totalEst, status: status });
+  return { requestIds: ids, status: status, estValue: totalEst, threshold: threshold, approvedBy: approvedBy };
+}
+
 /**
  * Satvik approves or rejects a request Hitesh raised from the floor.
  *
@@ -522,6 +570,7 @@ function processDecidePurchaseRequest(payload) {
  */
 function processStockHandover(payload) {
   var req = payload.data;
+  if (req.lines) return processStockHandoverLines(payload);
 
   if (!req.productId) throw new Error("VALIDATION: No product selected.");
   var qty = Number(req.qty) || 0;
@@ -585,6 +634,47 @@ function processStockHandover(payload) {
   });
 
   return { handoverId: handoverId, qty: qty, uom: product.IssueUOM };
+}
+
+/** Several products, one destination and one receiver. Each product is its own handover. Nothing is written if any line is short. */
+function processStockHandoverLines(payload) {
+  var req = payload.data || {};
+  if (req.requestId) throw new Error("VALIDATION: Supplying a request is one product.");
+  if (!req.lines || !req.lines.length) throw new Error("VALIDATION: Add at least one product.");
+  var fromLocationId = actorLocation(payload.actor);
+  var toLocationId = req.toLocationId || getConfig("SalonFloorLocationID", "LOC-02");
+  var salonId = getConfig("SalonFloorLocationID", "LOC-02");
+  var destination = readAll("LISTS").filter(function (v) { return v.Type === "LOCATION" && v.Code === toLocationId && isTruthy(v.Active) && v.Extra; })[0];
+  if (!destination || toLocationId === fromLocationId) throw new Error("VALIDATION: Choose an active destination studio.");
+  var receiver = findRecord("PEOPLE", "UserID", req.toUserId);
+  var senderUser = getUser(payload.actor);
+  var selfConfirming = senderUser && receiver && receiver.UserID === senderUser.UserID;
+  if (!receiver || !isTruthy(receiver.Active) || (appRole(receiver.Role) !== "ProductDistributor" && !selfConfirming)) throw new Error("VALIDATION: Select a receiver.");
+  if (toLocationId !== salonId && String(receiver.LocationID).trim() !== toLocationId && !selfConfirming) throw new Error("VALIDATION: Select a receiver based at " + destination.Name + ", or yourself if you will confirm it once it arrives.");
+
+  var seen = {};
+  var prepared = req.lines.map(function (line) {
+    if (!line.productId) throw new Error("VALIDATION: No product selected.");
+    var product = getProduct(line.productId);
+    if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+    if (seen[line.productId]) throw new Error("VALIDATION: " + product.Name + " is already on this handover. Increase its quantity.");
+    seen[line.productId] = true;
+    var qty = positiveQuantity(line.qty, product, false);
+    var available = computeAvailableBalance(line.productId, fromLocationId);
+    if (qty > available) throw new Error("INSUFFICIENT_STOCK: " + available + " " + product.IssueUOM + " sitting at " + fromLocationId + ", tried to hand over " + qty + " of " + product.Name + ".");
+    return { product: product, productId: line.productId, qty: qty, qtyBase: toBaseQty(product, qty, false) };
+  });
+  var now = new Date();
+  var ids = prepared.map(function (line) {
+    var handoverId = nextId("HND");
+    appendRecords("LEDGER", [
+      { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: fromLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "" },
+      { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: toLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "" }
+    ]);
+    return handoverId;
+  });
+  audit(payload.actor, "stock.handover", ids[0], { count: ids.length, fromLocationId: fromLocationId, toLocationId: toLocationId });
+  return { handoverIds: ids };
 }
 
 /**
