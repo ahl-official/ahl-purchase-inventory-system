@@ -35,6 +35,7 @@ export type AppsScriptAction =
   | "stock.receive"
   | "purchase.request"
   | "purchase.approve"
+  | "purchase.approveMany"
   | "stock.handover"
   | "stock.confirmHandover"
   | "handover.list"

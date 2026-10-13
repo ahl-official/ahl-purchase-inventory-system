@@ -68,6 +68,7 @@ function doPost(e) {
         'stock.receive':['PurchaseCoordinator','Admin'],
         'purchase.request':['PurchaseCoordinator','ProductDistributor','Admin'],
         'purchase.approve':['PurchaseCoordinator','Admin'],
+        'purchase.approveMany':['PurchaseCoordinator','Admin'],
         'stock.handover':['PurchaseCoordinator','ProductDistributor','Admin'],
         'stock.confirmHandover':['PurchaseCoordinator','ProductDistributor','Admin'],
         'handover.list':['PurchaseCoordinator','ProductDistributor','Admin'],
@@ -140,6 +141,9 @@ function doPost(e) {
           break;
         case "purchase.approve":
           result = processDecidePurchaseRequest(payload);
+          break;
+        case "purchase.approveMany":
+          result = processDecidePurchaseRequestMany(payload);
           break;
         case "stock.handover":
           result = processStockHandover(payload);

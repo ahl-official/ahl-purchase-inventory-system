@@ -559,6 +559,31 @@ function processDecidePurchaseRequest(payload) {
   return { requestId: requestId, status: newStatus };
 }
 
+/** Several requests at once -- one network round trip instead of one per click. A bad id in the batch does not stop the rest. */
+function processDecidePurchaseRequestMany(payload) {
+  var req = payload.data || {};
+  var ids = req.requestIds;
+  if (!ids || !ids.length) throw new Error("VALIDATION: Select at least one request.");
+  var decision = String(req.decision || "").trim().toUpperCase();
+  if (decision !== "APPROVE" && decision !== "REJECT") throw new Error("VALIDATION: Decision must be Approve or Reject.");
+
+  // Nothing is written if any one of them can no longer be decided (already actioned elsewhere
+  // in the meantime) -- the group approves as a whole or not at all, never silently 4 of 5.
+  var rows = readAll("REQUESTS"), byId = {};
+  rows.forEach(function (r) { byId[r.RequestID] = r; });
+  ids.forEach(function (requestId) {
+    var r = byId[requestId];
+    if (!r) throw new Error("NOT_FOUND: No request " + requestId + ".");
+    if (String(r.Status).trim() !== "PENDING_APPROVAL") throw new Error("VALIDATION: " + requestId + " is " + r.Status + ", not awaiting approval -- someone may have just decided it. Refresh and try again.");
+  });
+
+  var results = ids.map(function (requestId) {
+    return processDecidePurchaseRequest({ actor: payload.actor, data: { requestId: requestId, decision: decision, notes: req.notes } });
+  });
+  audit(payload.actor, "purchase.request." + decision.toLowerCase() + "Many", ids.join(","), { count: ids.length });
+  return { results: results };
+}
+
 /**
  * Satvik hands physical stock from receiving over to Hitesh.
  *
@@ -609,7 +634,7 @@ function processStockHandover(payload) {
   }
 
   var handoverId = nextId("HND");
-  var now = new Date();
+  var now = resolveTxnDate(req);
   var qtyBase = toBaseQty(product, qty, false);
 
   appendRecords("LEDGER", [
@@ -633,13 +658,18 @@ function processStockHandover(payload) {
     productId: req.productId, qty: qty, fromLocationId: fromLocationId, toLocationId: toLocationId
   });
 
+  // Supplying from stock closes the request the same way ordering does -- otherwise it never
+  // leaves Satvik's open-requests list even after the stock has actually gone out.
+  if (req.requestId) updateRecordFields("REQUESTS", "RequestID", req.requestId, { Status: "SUPPLIED" });
+
   return { handoverId: handoverId, qty: qty, uom: product.IssueUOM };
 }
 
-/** Several products, one destination and one receiver. Each product is its own handover. Nothing is written if any line is short. */
+/** Several products, one destination and one receiver. Each product is its own handover, and each
+    can optionally close the request it fulfils (line.requestId), the same way stock.handover does
+    for one product. Nothing is written if any line is short. */
 function processStockHandoverLines(payload) {
   var req = payload.data || {};
-  if (req.requestId) throw new Error("VALIDATION: Supplying a request is one product.");
   if (!req.lines || !req.lines.length) throw new Error("VALIDATION: Add at least one product.");
   var fromLocationId = actorLocation(payload.actor);
   var toLocationId = req.toLocationId || getConfig("SalonFloorLocationID", "LOC-02");
@@ -662,7 +692,7 @@ function processStockHandoverLines(payload) {
     var qty = positiveQuantity(line.qty, product, false);
     var available = computeAvailableBalance(line.productId, fromLocationId);
     if (qty > available) throw new Error("INSUFFICIENT_STOCK: " + available + " " + product.IssueUOM + " sitting at " + fromLocationId + ", tried to hand over " + qty + " of " + product.Name + ".");
-    return { product: product, productId: line.productId, qty: qty, qtyBase: toBaseQty(product, qty, false) };
+    return { product: product, productId: line.productId, qty: qty, qtyBase: toBaseQty(product, qty, false), requestId: String(line.requestId || "").trim() };
   });
   var now = resolveTxnDate(req);
   var ids = prepared.map(function (line) {
@@ -672,6 +702,9 @@ function processStockHandoverLines(payload) {
       { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: toLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "" }
     ]);
     return handoverId;
+  });
+  prepared.forEach(function (line) {
+    if (line.requestId) updateRecordFields("REQUESTS", "RequestID", line.requestId, { Status: "SUPPLIED" });
   });
   audit(payload.actor, "stock.handover", ids[0], { count: ids.length, fromLocationId: fromLocationId, toLocationId: toLocationId });
   return { handoverIds: ids };

@@ -52,6 +52,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   // rather than letting him self-approve like Satvik can.
   "purchase.request": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "purchase.approve": ["PurchaseCoordinator", "Admin"],
+  "purchase.approveMany": ["PurchaseCoordinator", "Admin"],
   "stock.handover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.confirmHandover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "handover.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
