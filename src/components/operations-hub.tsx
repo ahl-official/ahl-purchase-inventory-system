@@ -56,19 +56,18 @@ function RequestsPanel({rows,office,data,c,busy,perform,setForm}:{rows:RequestRo
 
   const pending=groupRequests(rows.filter(r=>r.status==='PENDING_APPROVAL'));
   const approved=groupRequests(rows.filter(r=>r.status!=='PENDING_APPROVAL'&&r.productId));
-  const who=(r:RequestRow)=>{const p=c.people.find(x=>x.id===r.requestedBy);return <>{p?.name||r.requestedBy} · {c.locations.find(l=>l.id===p?.locationId)?.name} · {r.notes}</>;};
+  const who=(r:RequestRow)=>{const p=c.people.find(x=>x.id===r.requestedBy);return <>{p?.name||r.requestedBy} · {c.locations.find(l=>l.id===p?.locationId)?.name}</>;};
   const stockHint=(r:RequestRow)=>{const s=data.dashboard.stock.find(x=>x.productId===r.productId);return `Head Office has ${s?.headOfficeAvailable??0}, salon has ${s?.salonFloorBalance??0}`;};
 
   return <ul className="divide-y">
     {!pending.length&&!approved.length&&<li className="p-5"><Empty text="No open requests."/></li>}
     {pending.map(g=><li key={requestBatchKey(g[0])} className="space-y-3 p-5">
-      <p className="text-xs text-muted-foreground">{who(g[0])}</p>
-      <div className="divide-y">{g.map(r=><div key={r.requestId} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm"><span>{r.productName} · {requestQtyLabel(r,c)}<span className="block text-xs text-muted-foreground">{stockHint(r)}</span></span><Button size="sm" variant="outline" disabled={busy} onClick={()=>void perform('purchase.approve',{requestId:r.requestId,decision:'REJECT'})}>Reject</Button></div>)}</div>
-      <Button disabled={busy} onClick={()=>void perform('purchase.approveMany',{requestIds:g.map(r=>r.requestId),decision:'APPROVE'})}>{g.length>1?`Approve all ${g.length}`:'Approve'}</Button>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">{who(g[0])} · {g.length} {g.length>1?'products':'product'}</p>{g[0].notes&&<p className="text-xs text-muted-foreground">{g[0].notes}</p>}</div><Button disabled={busy} onClick={()=>void perform('purchase.approveMany',{requestIds:g.map(r=>r.requestId),decision:'APPROVE'})}>{g.length>1?`Approve all ${g.length}`:'Approve'}</Button></div>
+      <div className="divide-y rounded-lg border">{g.map(r=><div key={r.requestId} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm"><span>{r.productName} · {requestQtyLabel(r,c)}<span className="block text-xs text-muted-foreground">{stockHint(r)}</span></span><Button size="sm" variant="outline" disabled={busy} onClick={()=>void perform('purchase.approve',{requestId:r.requestId,decision:'REJECT'})}>Reject</Button></div>)}</div>
     </li>)}
     {approved.map(g=><li key={requestBatchKey(g[0])+':approved'} className="space-y-3 p-5">
-      <p className="text-xs text-muted-foreground">{who(g[0])}</p>
-      <div className="divide-y">{g.map(r=><div key={r.requestId} className="py-2 text-sm">{r.productName} · {requestQtyLabel(r,c)}<span className="block text-xs text-muted-foreground">{stockHint(r)}</span></div>)}</div>
+      <div><p className="text-sm font-semibold">{who(g[0])} · {g.length} {g.length>1?'products':'product'} approved</p>{g[0].notes&&<p className="text-xs text-muted-foreground">{g[0].notes}</p>}</div>
+      <div className="divide-y rounded-lg border">{g.map(r=><div key={r.requestId} className="px-3 py-2 text-sm">{r.productName} · {requestQtyLabel(r,c)}<span className="block text-xs text-muted-foreground">{stockHint(r)}</span></div>)}</div>
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" disabled={busy} onClick={()=>setForm({kind:'handover',presetLines:g.map(r=>{const prod=c.products.find(x=>x.id===r.productId);return {productId:r.productId,qty:String(prod?.conversion?r.qty/prod.conversion:r.qty),requestId:r.requestId};})})}>{g.length>1?'Supply all from stock':'Supply from stock'}</Button>
         {g.length===1&&<Button variant="outline" disabled={busy} onClick={()=>setForm({kind:'order',productId:g[0].productId,requestId:g[0].requestId,requestedQty:g[0].qty,requestedUom:c.products.find(x=>x.id===g[0].productId)?.purchaseUom})}>Order from vendor</Button>}
