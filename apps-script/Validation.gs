@@ -255,3 +255,18 @@ function audit(actor, action, ref, detail, result) {
     console.error("Could not write audit row: " + err);
   }
 }
+
+/**
+ * The date a stock movement actually happened, not just when it was typed in. Staff who log
+ * something late can backdate it instead of writing the real date into Notes as free text.
+ * req.date is a plain "YYYY-MM-DD" from an <input type="date">; absent means "now", matching
+ * every handler's old behaviour before this field existed.
+ */
+function resolveTxnDate(req) {
+  if (!req || !req.date) return new Date();
+  var d = new Date(req.date + "T12:00:00");
+  if (isNaN(d.getTime())) throw new Error("VALIDATION: Enter a valid date.");
+  var endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+  if (d.getTime() > endOfToday.getTime()) throw new Error("VALIDATION: The date cannot be in the future.");
+  return d;
+}

@@ -163,7 +163,7 @@ function processStockAdjustment(payload) {
     if(returned+qty>Number(source.QtyBase)) throw new Error('VALIDATION: Return exceeds the quantity originally issued.');
   }
   var id=nextId('TXN');
-  appendRecord('LEDGER',{TxnID:id,Date:new Date(),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:r.notes});
+  appendRecord('LEDGER',{TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:r.notes});
   audit(payload.actor,'stock.adjust',id,r);
   return {txnId:id};
 }

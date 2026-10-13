@@ -56,7 +56,7 @@ function processStockIssue(payload) {
   }
 
   var handoverId = nextId("HND");
-  var now = new Date();
+  var now = resolveTxnDate(req);
   ensureColumn("LEDGER", "BusinessUnit");
 
   var rows = req.splits.map(function (split) {
@@ -227,7 +227,7 @@ function processStockReceive(payload) {
 
   appendRecord("LEDGER", {
     TxnID: txnId,
-    Date: new Date(),
+    Date: resolveTxnDate(req),
     Type: "RECEIPT",
     Direction: 1,
     ProductID: req.productId,
@@ -309,7 +309,7 @@ function processStockReceiveLines(payload) {
     bill = saveBillPhoto(req.photo, { kind: "BILL", txnId: firstTxn, actor: payload.actor, vendorId: req.vendorId });
   }
 
-  var now = new Date();
+  var now = resolveTxnDate(req);
   var rows = prepared.map(function (line, i) {
     return {
       TxnID: i === 0 ? firstTxn : nextId("TXN"),
@@ -664,7 +664,7 @@ function processStockHandoverLines(payload) {
     if (qty > available) throw new Error("INSUFFICIENT_STOCK: " + available + " " + product.IssueUOM + " sitting at " + fromLocationId + ", tried to hand over " + qty + " of " + product.Name + ".");
     return { product: product, productId: line.productId, qty: qty, qtyBase: toBaseQty(product, qty, false) };
   });
-  var now = new Date();
+  var now = resolveTxnDate(req);
   var ids = prepared.map(function (line) {
     var handoverId = nextId("HND");
     appendRecords("LEDGER", [
