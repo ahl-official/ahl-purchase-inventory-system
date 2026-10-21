@@ -58,7 +58,7 @@ function processOrderCreate(payload) {
   }
   var id=nextId('PO');
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
-  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:new Date(),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId});
+  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId});
   if(r.requestId) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
   audit(payload.actor,'order.create',id,r);
   return {orderId:id, deliveryLocationId:deliveryLocationId};
@@ -90,7 +90,7 @@ function processOrderCreateLines(payload) {
   });
   var ids = prepared.map(function (line) {
     var id = nextId('PO');
-    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:new Date(),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId});
+    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId});
     return id;
   });
   audit(payload.actor,'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});
