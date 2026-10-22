@@ -29,6 +29,7 @@ function fixture() {
   const {receive,writes}=fixture();
   receive([{poId:'PO-1',productId:'A',qty:2},{poId:'PO-2',productId:'B',qty:3,amount:0}]);
   assert.equal(writes.length,2);
+  assert.equal(writes[0].ReceiptID,writes[1].ReceiptID);
   assert.equal(writes[0].PORef,'PO-1'); assert.equal(writes[0].QtyBase,200);
   assert.equal(writes[0].Amount,400); assert.equal(writes[1].Amount,0);
   assert.equal(writes[1].LocationID,'LOC-03');

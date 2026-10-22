@@ -263,7 +263,25 @@ function getInventoryReport(payload) {
 
 function getOperations(payload) {
   var dashboard=getDashboard(payload);
-  return { myLocationId:actorLocation(payload.actor), myUserId:(getUser(payload.actor)||{}).UserID||'', catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:readAll('LEDGER').slice(-500).reverse().map(function(r){return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || ''};}) };
+  return { myLocationId:actorLocation(payload.actor), myUserId:(getUser(payload.actor)||{}).UserID||'', catalogue:getCatalogue(), dashboard:dashboard, orders:listPurchaseOrders(), opening:listOpeningCounts(payload), history:getMovementHistory() };
+}
+
+/** Keep invoice metadata and complete invoices even at the recent-history cutoff. */
+function getMovementHistory() {
+  function key(r) {
+    if (r.Type !== 'RECEIPT') return JSON.stringify(['movement',r.TxnID]);
+    var prefix=['receipt',String(r.VendorID || ''),r.Status === 'VOID' ? 'VOID' : 'POSTED'];
+    var invoice=String(r.InvoiceNo || '').trim();
+    if (invoice && r.VendorID) return JSON.stringify(prefix.concat(['invoice',invoice,Utilities.formatDate(new Date(r.Date),'Asia/Kolkata','yyyy-MM-dd')]));
+    if (r.ReceiptID) return JSON.stringify(prefix.concat(['batch',String(r.ReceiptID)]));
+    if (r.BillPhotoURL) return JSON.stringify(prefix.concat(['bill',String(r.BillPhotoURL)]));
+    return JSON.stringify(prefix.concat(['transaction',r.TxnID]));
+  }
+  var rows=readAll('LEDGER'), keys={};
+  rows.slice(-500).forEach(function(r){keys[key(r)]=true;});
+  return rows.filter(function(r){return keys[key(r)];}).reverse().map(function(r){
+    return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || '',vendorId:String(r.VendorID || ''),invoiceNo:String(r.InvoiceNo || ''),receiptId:String(r.ReceiptID || ''),poRef:String(r.PORef || ''),billPhotoUrl:String(r.BillPhotoURL || ''),amount:r.Amount === '' || r.Amount == null ? null : Number(r.Amount),gstAmount:r.GSTAmount === '' || r.GSTAmount == null ? null : Number(r.GSTAmount)};
+  });
 }
 
 /** Sets a product's main vendor (the one the purchase screens list first). Past purchases keep the vendor they were bought from. */

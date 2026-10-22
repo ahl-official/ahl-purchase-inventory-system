@@ -273,6 +273,14 @@ before using it; older deployments reject the new action rather than creating un
 Each receipt preserves its order's destination and checks the current outstanding amount under
 the lock. Run `node tests/order-receiving.mjs` for isolated checks without production writes.
 
+History displays purchase receipts as invoice cards with recorded line amounts, GST and totals.
+Both read paths expose invoice/vendor/order/bill metadata and include entire invoices at the
+500-movement cutoff. Group by vendor + invoice number + IST receipt date; without an invoice,
+use ReceiptID or a shared bill URL, otherwise keep the transaction separate. New receipts add
+ReceiptID lazily on their normal write path; do not backfill or rewrite old ledger rows. Missing
+historical amounts are shown as unrecorded. Head Office shows invoices across delivery locations;
+other locations show their own receipt subtotals. Check with `node tests/invoice-history.mjs`.
+
 Run the checks appropriate to the change:
 
 ```powershell

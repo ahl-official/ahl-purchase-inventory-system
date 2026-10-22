@@ -225,8 +225,10 @@ function processStockReceive(payload) {
   var qtyBase = toBaseQty(product, qty, true);
   var amount = Number(req.amount) || qtyBase * (Number(product.Cost) || 0);
 
+  ensureColumn("LEDGER", "ReceiptID");
   appendRecord("LEDGER", {
     TxnID: txnId,
+    ReceiptID: txnId,
     Date: resolveTxnDate(req),
     Type: "RECEIPT",
     Direction: 1,
@@ -315,6 +317,7 @@ function processStockReceiveLines(payload) {
   var billGst = gst === "" ? "" : Math.round(prepared.reduce(function (sum, line) { return sum + line.amount; }, 0) * gst) / 100;
   ensureColumn("LEDGER", "GSTPercent");
   ensureColumn("LEDGER", "GSTAmount");
+  ensureColumn("LEDGER", "ReceiptID");
 
   var firstTxn = nextId("TXN");
   var bill = null;
@@ -326,6 +329,7 @@ function processStockReceiveLines(payload) {
   var rows = prepared.map(function (line, i) {
     return {
       TxnID: i === 0 ? firstTxn : nextId("TXN"),
+      ReceiptID: firstTxn,
       Date: now, Type: "RECEIPT", Direction: 1,
       ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
       LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount, GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,

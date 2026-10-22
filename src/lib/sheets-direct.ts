@@ -8,6 +8,7 @@
  * SERVER ONLY. GOOGLE_SERVICE_ACCOUNT_KEY must never reach the client.
  */
 import { createSign } from "node:crypto";
+import { recentHistory } from './movement-history';
 
 type Row = Record<string, string | number>;
 interface Ctx {
@@ -318,7 +319,7 @@ function getOperations(ctx: Ctx, actor: string) {
     dashboard: getDashboard(ctx, actor),
     orders: listPurchaseOrders(ctx),
     opening: listOpeningCounts(ctx, actor),
-    history: ctx.ledger.slice(-500).reverse().map((r) => ({ txnId: r.TxnID, date: serialToIso(r.Date), productId: r.ProductID, qty: Number(r.Qty), uom: r.UOM, type: r.Type, locationId: r.LocationID, personId: r.PersonID, status: r.Status, notes: r.Notes || "" })),
+    history: recentHistory(ctx.ledger.map((r) => ({ txnId: String(r.TxnID), date: serialToIso(r.Date), productId: String(r.ProductID), qty: Number(r.Qty), uom: String(r.UOM), type: String(r.Type), locationId: String(r.LocationID), personId: String(r.PersonID||''), status: String(r.Status), notes: String(r.Notes || ''), vendorId:String(r.VendorID||''), invoiceNo:String(r.InvoiceNo||''), receiptId:String(r.ReceiptID||''), poRef:String(r.PORef||''), billPhotoUrl:String(r.BillPhotoURL||''), amount:r.Amount===''||r.Amount==null?null:Number(r.Amount), gstAmount:r.GSTAmount===''||r.GSTAmount==null?null:Number(r.GSTAmount) }))),
   };
 }
 
