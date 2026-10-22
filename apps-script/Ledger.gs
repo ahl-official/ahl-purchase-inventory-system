@@ -273,7 +273,11 @@ function processStockReceiveLines(payload) {
   var headOfficeLocationId = getConfig("HeadOfficeLocationID", "LOC-01");
   if (req.poId) throw new Error("VALIDATION: A multi-product bill cannot be tied to one order.");
   if (!req.vendorId || !readAll("LISTS").some(function (v) { return v.Type === "VENDOR" && v.Code === req.vendorId && isTruthy(v.Active); })) throw new Error("VALIDATION: Select a vendor.");
-  if (!req.lines.length) throw new Error("VALIDATION: Add at least one product.");
+  if (!Array.isArray(req.lines) || !req.lines.length) throw new Error("VALIDATION: Add at least one product.");
+  var linked = req.lines.some(function (line) { return !!line.poId; });
+  if (linked && req.lines.some(function (line) { return !line.poId; })) throw new Error("VALIDATION: Receive ordered and unordered products separately.");
+  var orders = linked ? listPurchaseOrders() : [];
+  var seenOrders = {};
 
   var locationId = String(req.locationId || headOfficeLocationId);
   if (locationId === getConfig("DispatchLocationID", "LOC-05")) throw new Error("VALIDATION: Dispatch is not a delivery destination.");
@@ -289,12 +293,21 @@ function processStockReceiveLines(payload) {
     var product = getProduct(line.productId);
     if (!product) throw new Error("UNKNOWN_PRODUCT: " + line.productId + " is not in PRODUCTS.");
     var qty = positiveQuantity(line.qty, product, false);
+    var order = null;
+    if (linked) {
+      if (seenOrders[line.poId]) throw new Error("VALIDATION: An order can appear only once per receipt.");
+      seenOrders[line.poId] = true;
+      order = orders.find(function (o) { return o.orderId === line.poId; });
+      if (!order || order.productId !== line.productId || order.vendorId !== req.vendorId || ['CANCELLED','RECEIVED'].indexOf(order.status) >= 0) throw new Error("VALIDATION: Select an open order matching product and vendor. Refresh the orders.");
+      if (qty > order.remaining) throw new Error("VALIDATION: Received quantity exceeds the outstanding order for " + product.Name + ". Refresh the orders.");
+      if (order.uom !== (product.PurchaseUOM || product.IssueUOM)) throw new Error("VALIDATION: Product units changed since ordering. Ask management to reconcile this order.");
+    }
     var qtyBase = toBaseQty(product, qty, true);
     var rawAmount = line.amount;
     var hasAmount = rawAmount !== "" && rawAmount !== undefined && rawAmount !== null;
     var amount = hasAmount ? Number(rawAmount) : 0;
     if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
-    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount, hasAmount: hasAmount };
+    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount, hasAmount: hasAmount, poId: order ? order.orderId : '', locationId: order ? order.deliveryLocationId : locationId };
   });
 
   var gst = req.gstPercent === "" || req.gstPercent === undefined || req.gstPercent === null ? "" : Number(req.gstPercent);
@@ -315,7 +328,7 @@ function processStockReceiveLines(payload) {
       TxnID: i === 0 ? firstTxn : nextId("TXN"),
       Date: now, Type: "RECEIPT", Direction: 1,
       ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
-      LocationID: locationId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.amount, GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
+      LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount, GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
       BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
       Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", gst === "" ? "" : "GST " + gst + "% ₹" + billGst].filter(Boolean).join(" | ")
     };

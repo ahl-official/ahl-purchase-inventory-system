@@ -66,6 +66,7 @@ function doPost(e) {
         'stock.issue':['PurchaseCoordinator','ProductDistributor','Admin'],
         'stock.retailSale':['PurchaseCoordinator','ProductDistributor','Admin'],
         'stock.receive':['PurchaseCoordinator','Admin'],
+        'stock.receiveOrders':['PurchaseCoordinator','Admin'],
         'purchase.request':['PurchaseCoordinator','ProductDistributor','Admin'],
         'purchase.approve':['PurchaseCoordinator','Admin'],
         'purchase.approveMany':['PurchaseCoordinator','Admin'],
@@ -135,6 +136,10 @@ function doPost(e) {
           break;
         case "stock.receive":
           result = processStockReceive(payload);
+          break;
+        case "stock.receiveOrders":
+          if (!payload.data || !Array.isArray(payload.data.lines) || !payload.data.lines.length || payload.data.lines.some(function (line) { return !line.poId; })) throw new Error("VALIDATION: Select at least one outstanding order.");
+          result = processStockReceiveLines(payload);
           break;
         case "purchase.request":
           result = processPurchaseRequest(payload);

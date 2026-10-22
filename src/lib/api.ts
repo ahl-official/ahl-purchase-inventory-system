@@ -33,6 +33,7 @@ export type AppsScriptAction =
   | "stock.issue"
   | "stock.retailSale"
   | "stock.receive"
+  | "stock.receiveOrders"
   | "purchase.request"
   | "purchase.approve"
   | "purchase.approveMany"

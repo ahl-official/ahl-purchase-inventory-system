@@ -265,6 +265,14 @@ Apps Script Script Properties:
 
 ## 8. Validation commands
 
+Order receiving: Purchases now includes a vendor/order-date selector with editable outstanding
+quantities. The order date uses Asia/Kolkata; receipt date is entered separately. Zero quantities
+are omitted, leaving missing products due. `stock.receiveOrders` accepts `lines` with a `poId`
+per line and uses the existing write lock and operation-ID controls. Deploy the updated Apps Script
+before using it; older deployments reject the new action rather than creating unlinked receipts.
+Each receipt preserves its order's destination and checks the current outstanding amount under
+the lock. Run `node tests/order-receiving.mjs` for isolated checks without production writes.
+
 Run the checks appropriate to the change:
 
 ```powershell

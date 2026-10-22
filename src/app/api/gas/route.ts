@@ -47,6 +47,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
+  "stock.receiveOrders": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the
   // Apps Script side is what actually forces his rows to PENDING_APPROVAL
   // rather than letting him self-approve like Satvik can.
@@ -129,6 +130,10 @@ export async function POST(request: Request) {
     actor,
     data: data ?? {},
   });
+
+  if (action === "stock.receiveOrders" && !result.ok && result.error === "UNKNOWN_ACTION") {
+    return NextResponse.json({ ...result, message: "Order receiving needs the updated Apps Script backend. Ask the administrator to deploy it, then try again." }, { status: 200 });
+  }
 
   // Always HTTP 200 for a business-level rejection; the client reads result.ok.
   // Reserved 4xx/5xx above are transport/authz failures the client cannot retry.
