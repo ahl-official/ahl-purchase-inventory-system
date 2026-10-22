@@ -315,6 +315,10 @@ function processStockReceiveLines(payload) {
   var gst = req.gstPercent === "" || req.gstPercent === undefined || req.gstPercent === null ? "" : Number(req.gstPercent);
   if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
   var billGst = gst === "" ? "" : Math.round(prepared.reduce(function (sum, line) { return sum + line.amount; }, 0) * gst) / 100;
+  // The receiver's own negotiated/discounted final price for the whole bill -- informational,
+  // recorded alongside the computed total rather than changing any line's Amount.
+  var discounted = req.discountedAmount === "" || req.discountedAmount === undefined || req.discountedAmount === null ? "" : Number(req.discountedAmount);
+  if (discounted !== "" && (!isFinite(discounted) || discounted < 0)) throw new Error("VALIDATION: Enter a valid discounted price.");
   ensureColumn("LEDGER", "GSTPercent");
   ensureColumn("LEDGER", "GSTAmount");
   ensureColumn("LEDGER", "ReceiptID");
@@ -334,7 +338,7 @@ function processStockReceiveLines(payload) {
       ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
       LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount, GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
       BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
-      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", gst === "" ? "" : "GST " + gst + "% ₹" + billGst].filter(Boolean).join(" | ")
+      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", gst === "" ? "" : "GST " + gst + "% ₹" + billGst, discounted === "" ? "" : "Discounted price ₹" + discounted].filter(Boolean).join(" | ")
     };
   });
   appendRecords("LEDGER", rows);

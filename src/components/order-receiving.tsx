@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Button } from './ui/button';
 import { Panel, Select, TextInput } from './ui/field';
 import { PhotoCapture, type CapturedPhoto } from './photo-capture';
@@ -14,6 +14,18 @@ export interface ReceivingOrder {
 }
 
 const money=(amount:number)=>new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'}).format(amount);
+
+// Enter in a row's input would otherwise submit the whole receipt (default HTML form
+// behaviour). Move to the next field in the basket instead, like tabbing.
+export function focusNextOnEnter(e:KeyboardEvent<HTMLInputElement>) {
+  if(e.key!=='Enter')return;
+  e.preventDefault();
+  const form=e.currentTarget.form;
+  if(!form)return;
+  const fields=Array.from(form.elements).filter((el):el is HTMLInputElement|HTMLSelectElement=>(el instanceof HTMLInputElement||el instanceof HTMLSelectElement)&&!el.disabled&&el.tabIndex!==-1);
+  const next=fields[fields.indexOf(e.currentTarget)+1];
+  next?.focus();
+}
 
 // Order dates are business dates in India, independent of the browser's timezone.
 function orderDay(value:string) {
@@ -46,7 +58,7 @@ function ReceiptBasket({orders,catalogue:c,vendor,busy,onSubmit}:{orders:Receivi
   const [quantities,setQuantities]=useState<Record<string,string>>(()=>Object.fromEntries(orders.map(o=>[o.orderId,String(o.remaining)])));
   const [amounts,setAmounts]=useState<Record<string,string>>({});
   const [date,setDate]=useState(()=>orderDay(new Date().toISOString()));
-  const [invoice,setInvoice]=useState(''),[notes,setNotes]=useState(''),[receiver,setReceiver]=useState(''),[gst,setGst]=useState('');
+  const [invoice,setInvoice]=useState(''),[notes,setNotes]=useState(''),[receiver,setReceiver]=useState(''),[gst,setGst]=useState(''),[discount,setDiscount]=useState('');
   const [photo,setPhoto]=useState<CapturedPhoto|null>(null);
   const [error,setError]=useState(''),[photoKey,setPhotoKey]=useState(0);
   const selected=orders.filter(o=>Number(quantities[o.orderId])>0);
@@ -56,13 +68,8 @@ function ReceiptBasket({orders,catalogue:c,vendor,busy,onSubmit}:{orders:Receivi
     const legacy=(o.notes||'').match(/Unit price ₹([0-9.]+)/)?.[1];
     return legacy!=null?Number(legacy):null;
   };
-  // Amount is calculated from the order's unit price, but can be typed over directly to
-  // match the real invoice line -- which doesn't always divide evenly into a clean unit price.
-  const lineAmount=(o:ReceivingOrder):number|null=>{
-    if(amounts[o.orderId]!==undefined&&amounts[o.orderId]!=='')return Number(amounts[o.orderId]);
-    const price=orderUnitPrice(o),qty=Number(quantities[o.orderId])||0;
-    return price!=null?price*qty:null;
-  };
+  // Amount is typed directly -- it does not auto-fill or shift as quantity or unit price change.
+  const lineAmount=(o:ReceivingOrder):number|null=>amounts[o.orderId]?Number(amounts[o.orderId]):null;
   const subtotal=selected.reduce((sum,o)=>sum+(lineAmount(o)||0),0);
   const gstAmount=gst===''?0:subtotal*Number(gst)/100;
   const submit=async(e:FormEvent<HTMLFormElement>)=>{
@@ -71,21 +78,21 @@ function ReceiptBasket({orders,catalogue:c,vendor,busy,onSubmit}:{orders:Receivi
     if(orders.some(o=>!Number.isFinite(Number(quantities[o.orderId]))||Number(quantities[o.orderId])<0||Number(quantities[o.orderId])>o.remaining)){setError('Received quantities must be between zero and the outstanding quantity.');return;}
     const ok=await onSubmit('stock.receiveOrders',{
       vendorId:vendor,date,invoiceNo:invoice,notes,receivedByName:receiver.trim(),photo,
-      gstPercent:gst===''?undefined:Number(gst),
+      gstPercent:gst===''?undefined:Number(gst),discountedAmount:discount===''?undefined:Number(discount),
       lines:selected.map(o=>({poId:o.orderId,productId:o.productId,qty:Number(quantities[o.orderId]),amount:lineAmount(o)==null?undefined:lineAmount(o)})),
     });
-    if(ok){setQuantities(Object.fromEntries(orders.map(o=>[o.orderId,'0'])));setAmounts({});setPhoto(null);setPhotoKey(k=>k+1);setInvoice('');}
+    if(ok){setQuantities(Object.fromEntries(orders.map(o=>[o.orderId,'0'])));setAmounts({});setDiscount('');setPhoto(null);setPhotoKey(k=>k+1);setInvoice('');}
   };
   return <form onSubmit={submit}><fieldset disabled={busy} className="space-y-4 disabled:opacity-60">
-    <p className="text-sm text-muted-foreground">Quantities start at the full outstanding amount. Enter a smaller quantity for a partial delivery, or 0 for a missing product. The rest stays pending. Unit price carries over from the order; the amount is calculated from it automatically but can be typed over to match the bill exactly.</p>
+    <p className="text-sm text-muted-foreground">Quantities start at the full outstanding amount. Enter a smaller quantity for a partial delivery, or 0 for a missing product. The rest stays pending. Unit price carries over from the order for reference; type the amount for each product directly.</p>
     <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={()=>setQuantities(Object.fromEntries(orders.map(o=>[o.orderId,String(o.remaining)])))}>Fill all outstanding quantities</Button><Button type="button" variant="outline" onClick={()=>setQuantities(Object.fromEntries(orders.map(o=>[o.orderId,'0'])))}>Clear quantities</Button></div>
-    <div className="overflow-hidden overflow-x-auto rounded-xl border"><table className="w-full min-w-[640px] text-left text-sm"><thead className="border-b bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-4 py-3 font-medium">Product / order</th><th className="px-4 py-3 text-right font-medium">Received</th><th className="px-4 py-3 text-right font-medium">Unit price (₹)</th><th className="px-4 py-3 text-right font-medium">Amount (₹)</th></tr></thead><tbody className="divide-y">{orders.map(o=>{const price=orderUnitPrice(o),computed=lineAmount(o);return <tr key={o.orderId}>
+    <div className="overflow-hidden overflow-x-auto rounded-xl border"><table className="w-full min-w-[640px] text-left text-sm"><thead className="border-b bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-4 py-3 font-medium">Product / order</th><th className="px-4 py-3 text-right font-medium">Received</th><th className="px-4 py-3 text-right font-medium">Unit price (₹)</th><th className="px-4 py-3 text-right font-medium">Amount (₹)</th></tr></thead><tbody className="divide-y">{orders.map(o=>{const price=orderUnitPrice(o);return <tr key={o.orderId}>
       <td className="px-4 py-3 align-top"><p className="text-sm font-semibold">{o.productName}</p><p className="text-xs text-muted-foreground">{o.orderId} · {c.locations.find(l=>l.id===o.deliveryLocationId)?.name||o.deliveryLocationId}</p><p className="mt-1 text-xs">Ordered {o.qty} · Received {o.received} · Due {o.remaining} {o.uom}</p><p className="mt-1 text-xs text-muted-foreground">Still due after this delivery: {Math.max(0,o.remaining-(Number(quantities[o.orderId])||0))} {o.uom}</p></td>
-      <td className="px-4 py-3 align-top text-right"><TextInput required type="number" min="0" max={o.remaining} step={o.uom==='PCS'?1:'any'} value={quantities[o.orderId]} onChange={e=>setQuantities(q=>({...q,[o.orderId]:e.target.value}))} className="w-24 text-right"/><p className="mt-1 text-xs text-muted-foreground">{o.uom}</p></td>
+      <td className="px-4 py-3 align-top text-right"><TextInput required type="number" min="0" max={o.remaining} step={o.uom==='PCS'?1:'any'} value={quantities[o.orderId]} onChange={e=>setQuantities(q=>({...q,[o.orderId]:e.target.value}))} onKeyDown={focusNextOnEnter} className="w-24 text-right"/><p className="mt-1 text-xs text-muted-foreground">{o.uom}</p></td>
       <td className="px-4 py-3 align-top text-right tabular">{price!=null?price.toFixed(2):<span className="text-muted-foreground">Not set</span>}</td>
-      <td className="px-4 py-3 align-top text-right"><TextInput type="number" min="0" step="0.01" placeholder={computed!=null?computed.toFixed(2):''} value={amounts[o.orderId]??''} onChange={e=>setAmounts(a=>({...a,[o.orderId]:e.target.value}))} className="w-28 text-right"/></td>
+      <td className="px-4 py-3 align-top text-right"><TextInput type="number" min="0" step="0.01" value={amounts[o.orderId]??''} onChange={e=>setAmounts(a=>({...a,[o.orderId]:e.target.value}))} onKeyDown={focusNextOnEnter} className="w-28 text-right"/></td>
     </tr>;})}</tbody></table></div>
-    <div className="space-y-2 rounded-xl border p-4 text-sm"><div className="flex justify-between"><span>Subtotal</span><span className="tabular">{money(subtotal)}</span></div>{gst!==''&&<div className="flex justify-between"><span>GST ({gst}%)</span><span className="tabular">{money(gstAmount)}</span></div>}<div className="flex justify-between font-semibold"><span>Bill total</span><span className="tabular">{money(subtotal+gstAmount)}</span></div></div>
+    <div className="space-y-2 rounded-xl border p-4 text-sm"><div className="flex justify-between"><span>Subtotal</span><span className="tabular">{money(subtotal)}</span></div>{gst!==''&&<div className="flex justify-between"><span>GST ({gst}%)</span><span className="tabular">{money(gstAmount)}</span></div>}<div className="flex justify-between font-semibold"><span>Bill total</span><span className="tabular">{money(subtotal+gstAmount)}</span></div><label className="flex items-center justify-between gap-2 pt-1 text-sm">Discounted price (optional)<TextInput type="number" min="0" step="0.01" placeholder="Final price after discount" value={discount} onChange={e=>setDiscount(e.target.value)} className="w-32 text-right"/></label></div>
     <div className="grid gap-4 sm:grid-cols-2">
       <label className="grid gap-2 text-sm">Receipt date<TextInput required type="date" max={orderDay(new Date().toISOString())} value={date} onChange={e=>setDate(e.target.value)}/></label>
       <label className="grid gap-2 text-sm">Invoice number<TextInput value={invoice} onChange={e=>setInvoice(e.target.value)}/></label>
