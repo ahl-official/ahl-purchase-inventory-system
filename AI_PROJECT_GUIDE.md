@@ -292,6 +292,12 @@ available in history, with actor/reason and audit references. This is an applica
 correction path; never manually delete or rewrite ledger rows. Product and location identities
 remain fixed during receipt editing. Run `node tests/entry-changes.mjs` for isolated checks.
 
+Product correction forms clear prior unit/type edits when a different product is selected and
+send type-only changes without unit fields. The backend checks the product settings snapshot,
+saves the correction reason, and treats already-correct values as a successful no-op. Unit
+changes with ledger history still require a separately reviewed stock conversion; do not bypass
+this guard or reinterpret existing quantities. Check with `node tests/product-correction.mjs`.
+
 Run the checks appropriate to the change:
 
 ```powershell

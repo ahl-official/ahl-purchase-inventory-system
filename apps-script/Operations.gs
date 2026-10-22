@@ -309,10 +309,11 @@ function processProductEditUnit(payload) {
   var r=payload.data || {};
   var p=getProduct(r.productId);
   if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');
+  if (r.expected && (String(r.expected.productType)!==String(p.ProductType || 'Consumable') || String(r.expected.purchaseUom)!==String(p.PurchaseUOM) || String(r.expected.issueUom)!==String(p.IssueUOM) || Number(r.expected.convFactor)!==(Number(p.ConvFactor) || 1))) throw new Error('STALE_ENTRY: This product changed after the form was loaded. Refresh and review the current product settings before saving.');
   var changes={};
   if(r.productType) {
     if(['Consumable','Retail','Both'].indexOf(r.productType)<0) throw new Error('VALIDATION: Choose Consumable, Retail or Both.');
-    if(r.productType!==p.ProductType) { allowBothProductType(); changes.ProductType=r.productType; }
+    if(r.productType!==p.ProductType) changes.ProductType=r.productType;
   }
   if(r.purchaseUom || r.issueUom || r.convFactor!=null) {
     var uom=function(v,label){var u=String(v || '').trim().toUpperCase();if(!/^[A-Z]{1,10}$/.test(u)) throw new Error('VALIDATION: Choose the '+label+'.');return u;};
@@ -322,13 +323,14 @@ function processProductEditUnit(payload) {
     var unitChanged = purchaseUom!==p.PurchaseUOM || issueUom!==p.IssueUOM || conv!==Number(p.ConvFactor);
     if(unitChanged) {
       if(readAll('LEDGER').some(function(l){return l.ProductID===r.productId;})) {
-        throw new Error('VALIDATION: This product already has stock history; its unit cannot be changed. Add a new product instead.');
+        throw new Error('VALIDATION: This product has stock history. Current units: 1 '+p.PurchaseUOM+' = '+p.ConvFactor+' '+p.IssueUOM+'. A unit change needs a reviewed stock conversion; no product fields were saved. To change only the product type, keep the current units.');
       }
       changes.PurchaseUOM=purchaseUom; changes.IssueUOM=issueUom; changes.ConvFactor=conv;
     }
   }
-  if(!Object.keys(changes).length) throw new Error('VALIDATION: Nothing to change.');
+  if(!Object.keys(changes).length) return {productId:r.productId,changed:false};
+  if(changes.ProductType) allowBothProductType();
   updateRecordFields('PRODUCTS','ProductID',r.productId,changes);
-  audit(payload.actor,'product.editUnit',r.productId,r);
-  return {productId:r.productId};
+  audit(payload.actor,'product.editUnit',r.productId,{before:{productType:p.ProductType,purchaseUom:p.PurchaseUOM,issueUom:p.IssueUOM,convFactor:p.ConvFactor},changes:changes,notes:r.notes || ''});
+  return {productId:r.productId,changed:true};
 }
