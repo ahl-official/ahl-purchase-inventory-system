@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, CheckSquare, ClipboardList, Layers, PackageCheck, PieChart } from "lucide-react";
+import { ArrowRight, CheckSquare, ClipboardList, Layers, Package, PackageCheck, PieChart } from "lucide-react";
 import { AppShell, PageContainer, PageHeader } from "@/components/app-shell";
 import { Panel } from "@/components/ui/field";
 
@@ -43,7 +43,7 @@ export default function AdminDashboard() {
           description="Read every balance and audit each step without changing Satvik or Hitesh's responsibilities."
         />
 
-        <div className="mb-5 grid gap-3 sm:grid-cols-3">
+        <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Link href="/dashboard" className="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-brand/40">
             <PackageCheck className="size-5 text-brand" />
             <p className="mt-3 text-sm font-semibold text-foreground">All stock &amp; reports</p>
@@ -60,6 +60,12 @@ export default function AdminDashboard() {
             <Layers className="size-5 text-brand" />
             <p className="mt-3 text-sm font-semibold text-foreground">Hitesh workflow</p>
             <p className="mt-1 text-xs text-muted-foreground">Recounts, custody and technician issues.</p>
+            <ArrowRight className="mt-3 size-4 text-muted-foreground transition-transform group-hover:translate-x-1" />
+          </Link>
+          <Link href="/admin/products" className="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-brand/40">
+            <Package className="size-5 text-brand" />
+            <p className="mt-3 text-sm font-semibold text-foreground">Product catalogue</p>
+            <p className="mt-1 text-xs text-muted-foreground">Add, archive or restore products.</p>
             <ArrowRight className="mt-3 size-4 text-muted-foreground transition-transform group-hover:translate-x-1" />
           </Link>
         </div>

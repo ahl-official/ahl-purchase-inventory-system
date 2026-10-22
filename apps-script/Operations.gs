@@ -12,12 +12,15 @@ function positiveQuantity(value, product, allowZero) {
   return qty;
 }
 
-function getCatalogue() {
+function getCatalogue(options) {
+  var includeInactive = options && options.includeInactive;
   var lists = readAll('LISTS').filter(function (r) { return isTruthy(r.Active); });
   function list(type) { return lists.filter(function (r) { return r.Type === type; }).map(function (r) { return { id:r.Code, name:r.Name, unit:r.Extra || '', dot:'bg-chart-1' }; }); }
+  var allRows = readAll('PRODUCTS');
+  var productRows = includeInactive ? allRows : allRows.filter(function(r){return isTruthy(r.Active);});
   return {
-    products: readAll('PRODUCTS').filter(function (r) { return isTruthy(r.Active); }).map(function (r) {
-      return { id:r.ProductID, name:r.Name, categoryId:r.CategoryID, productType:r.ProductType || 'Consumable', uom:r.IssueUOM, purchaseUom:r.PurchaseUOM, vendorId:r.VendorID || '', conversion:Number(r.ConvFactor) || 1, cost:Number(r.Cost) || 0, reorderLevel:Number(r.ReorderLevel) || 0, balance:null };
+    products: productRows.map(function (r) {
+      return { id:r.ProductID, name:r.Name, categoryId:r.CategoryID, productType:r.ProductType || 'Consumable', uom:r.IssueUOM, purchaseUom:r.PurchaseUOM, vendorId:r.VendorID || '', conversion:Number(r.ConvFactor) || 1, cost:Number(r.Cost) || 0, reorderLevel:Number(r.ReorderLevel) || 0, balance:null, active:isTruthy(r.Active) };
     }),
     // Explicit whitelist: never expose login or password fields.
     people: readAll('PEOPLE').filter(function (r) { return isTruthy(r.Active); }).map(function (r) { return { id:r.UserID, name:r.Name, role:appRole(r.Role) || r.Role, locationId:r.LocationID }; }),
@@ -322,9 +325,6 @@ function processProductEditUnit(payload) {
     if(purchaseUom===issueUom && conv!==1) throw new Error('VALIDATION: Same purchase and stock unit must contain exactly 1.');
     var unitChanged = purchaseUom!==p.PurchaseUOM || issueUom!==p.IssueUOM || conv!==Number(p.ConvFactor);
     if(unitChanged) {
-      if(readAll('LEDGER').some(function(l){return l.ProductID===r.productId;})) {
-        throw new Error('VALIDATION: This product has stock history. Current units: 1 '+p.PurchaseUOM+' = '+p.ConvFactor+' '+p.IssueUOM+'. A unit change needs a reviewed stock conversion; no product fields were saved. To change only the product type, keep the current units.');
-      }
       changes.PurchaseUOM=purchaseUom; changes.IssueUOM=issueUom; changes.ConvFactor=conv;
     }
   }
@@ -332,5 +332,27 @@ function processProductEditUnit(payload) {
   if(changes.ProductType) allowBothProductType();
   updateRecordFields('PRODUCTS','ProductID',r.productId,changes);
   audit(payload.actor,'product.editUnit',r.productId,{before:{productType:p.ProductType,purchaseUom:p.PurchaseUOM,issueUom:p.IssueUOM,convFactor:p.ConvFactor},changes:changes,notes:r.notes || ''});
+  return {productId:r.productId,changed:true};
+}
+
+function processProductDelete(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  var r=payload.data || {};
+  var p=getProduct(r.productId);
+  if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');
+  if(!isTruthy(p.Active)) return {productId:r.productId,changed:false}; // already inactive
+  updateRecordFields('PRODUCTS','ProductID',r.productId,{Active:false});
+  audit(payload.actor,'product.delete',r.productId,{name:p.Name,notes:r.notes || ''});
+  return {productId:r.productId,changed:true};
+}
+
+function processProductRestore(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  var r=payload.data || {};
+  var p=getProduct(r.productId);
+  if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');
+  if(isTruthy(p.Active)) return {productId:r.productId,changed:false}; // already active
+  updateRecordFields('PRODUCTS','ProductID',r.productId,{Active:true});
+  audit(payload.actor,'product.restore',r.productId,{name:p.Name,notes:r.notes || ''});
   return {productId:r.productId,changed:true};
 }

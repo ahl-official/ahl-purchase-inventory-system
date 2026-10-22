@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from 'react';
 import { postAction } from './api-client';
-export interface Product { id:string; name:string; categoryId:string; vendorId?:string; productType:string; uom:string; purchaseUom:string; conversion:number; cost:number; reorderLevel:number; }
+export interface Product { id:string; name:string; categoryId:string; vendorId?:string; productType:string; uom:string; purchaseUom:string; conversion:number; cost:number; reorderLevel:number; active?:boolean; }
 export interface Person { id:string; name:string; role:string; locationId:string; }
 export interface Lookup { id:string; name:string; unit:string; dot:string; }
 export interface Catalogue { products:Product[]; people:Person[]; categories:Lookup[]; vendors:Lookup[]; receivers?:Lookup[]; locations:Lookup[]; headOfficeLocationId:string; salonFloorLocationId:string; dispatchLocationId:string; approvalThreshold:number; }

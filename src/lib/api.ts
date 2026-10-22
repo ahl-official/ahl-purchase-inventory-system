@@ -31,6 +31,8 @@ export type AppsScriptAction =
   | "product.create"
   | "product.setVendor"
   | "product.editUnit"
+  | "product.delete"
+  | "product.restore"
   | "list.add"
   | "inventoryReport.read"
   | "auth.login"

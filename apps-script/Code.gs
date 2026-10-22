@@ -87,6 +87,8 @@ function doPost(e) {
         'product.create':['PurchaseCoordinator','Admin'],
         'product.setVendor':['PurchaseCoordinator','Admin'],
         'product.editUnit':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'product.delete':['PurchaseCoordinator','Admin'],
+        'product.restore':['PurchaseCoordinator','Admin'],
         'list.add':['PurchaseCoordinator','Admin'],
         'inventoryReport.read':['PurchaseCoordinator','Admin']
       };
@@ -117,7 +119,7 @@ function doPost(e) {
 
       switch (payload.action) {
         case 'operations.read': result=getOperations(payload); break;
-        case 'catalogue.read': result=getCatalogue(); break;
+        case 'catalogue.read': result=getCatalogue(payload.data); break;
         case 'order.create': result=processOrderCreate(payload); break;
         case 'order.cancel': result=processOrderCancel(payload); break;
         case 'order.edit': result=processOrderEdit(payload); break;
@@ -129,6 +131,8 @@ function doPost(e) {
         case 'product.create': result=processProductCreate(payload); break;
         case 'product.setVendor': result=processProductSetVendor(payload); break;
         case 'product.editUnit': result=processProductEditUnit(payload); break;
+        case 'product.delete': result=processProductDelete(payload); break;
+        case 'product.restore': result=processProductRestore(payload); break;
         case 'list.add': result=processListAdd(payload); break;
         case 'inventoryReport.read': result=getInventoryReport(payload); break;
         case "auth.login":
