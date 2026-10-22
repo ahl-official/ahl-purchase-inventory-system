@@ -10,7 +10,7 @@ function processOrderEdit(payload) {
   var req=payload.data || {}, reason=entryChangeReason(req);
   var order=listPurchaseOrders().find(function(o){return o.orderId === req.orderId;});
   if (!order || order.status === 'CANCELLED') throw new Error('VALIDATION: Select an active purchase order.');
-  if (!req.expected || Number(req.expected.qty) !== order.qty || req.expected.vendorId !== order.vendorId || String(req.expected.notes || '') !== String(order.notes || '') || new Date(req.expected.date).getTime() !== new Date(order.date).getTime()) throw new Error('STALE_ENTRY: This order changed. Refresh before editing.');
+  if (!req.expected || Number(req.expected.qty) !== order.qty || req.expected.vendorId !== order.vendorId || String(req.expected.notes || '') !== String(order.notes || '') || new Date(req.expected.date).getTime() !== new Date(order.date).getTime() || (req.expected.unitPrice !== undefined && Number(req.expected.unitPrice || 0) !== Number(order.unitPrice || 0))) throw new Error('STALE_ENTRY: This order changed. Refresh before editing.');
   var product=getProduct(order.productId), qty=positiveQuantity(req.qty,product,false);
   if (qty < order.received) throw new Error('VALIDATION: Ordered quantity cannot be less than the quantity already received. Edit the receipt first.');
   var vendor=String(req.vendorId || '');
@@ -18,13 +18,14 @@ function processOrderEdit(payload) {
   if (order.received > 0 && vendor !== order.vendorId) throw new Error('VALIDATION: A received order must keep its vendor. Correct its receipts first.');
   var date=resolveTxnDate(req);
   var notes=req.notes == null ? String(order.notes || '') : String(req.notes).trim();
+  var changes={QtyOrdered:qty,VendorID:vendor,Date:date,Notes:notes};
   if (Object.prototype.hasOwnProperty.call(req,'unitPrice')) {
     var price=req.unitPrice === '' ? '' : Number(req.unitPrice);
     if (price !== '' && (!isFinite(price) || price < 0)) throw new Error('VALIDATION: Enter a valid unit price.');
-    notes=notes.replace(/(?:\s*\|\s*)?Unit price ₹[0-9.]+/g,'').trim();
-    if (price !== '') notes=[notes,'Unit price ₹'+price].filter(Boolean).join(' | ');
+    ensureColumn('PURCHASE_ORDERS','UnitPrice');
+    changes.UnitPrice=price;
   }
-  updateRecordFields('PURCHASE_ORDERS','OrderID',order.orderId,{QtyOrdered:qty,VendorID:vendor,Date:date,Notes:notes});
+  updateRecordFields('PURCHASE_ORDERS','OrderID',order.orderId,changes);
   audit(payload.actor,'order.edit',order.orderId,{before:order,qty:qty,vendorId:vendor,date:date,reason:reason});
   return {orderId:order.orderId};
 }

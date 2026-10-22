@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 function fixture({issued=0,reserved=0,role='PurchaseCoordinator',receipt=true}={}) {
-  const headers={LEDGER:['TxnID','Date','Type','Direction','ProductID','Qty','UOM','QtyBase','LocationID','VendorID','PORef','InvoiceNo','Amount','GSTAmount','GSTPercent','ReceiptID','Actor','Status','Notes','BillPhotoURL'],PURCHASE_ORDERS:['OrderID','Date','ProductID','VendorID','QtyOrdered','UOM','RequestID','Status','Actor','Notes','DeliveryLocationID'],LISTS:['Type','Code','Active']};
+  const headers={LEDGER:['TxnID','Date','Type','Direction','ProductID','Qty','UOM','QtyBase','LocationID','VendorID','PORef','InvoiceNo','Amount','GSTAmount','GSTPercent','ReceiptID','Actor','Status','Notes','BillPhotoURL'],PURCHASE_ORDERS:['OrderID','Date','ProductID','VendorID','QtyOrdered','UOM','RequestID','Status','Actor','Notes','DeliveryLocationID','UnitPrice'],LISTS:['Type','Code','Active']};
   const dates='2026-10-20T06:30:00.000Z';
   const initial={LEDGER:receipt?[
     {TxnID:'R1',Date:dates,Type:'RECEIPT',Direction:1,ProductID:'A',Qty:5,UOM:'BOTTLE',QtyBase:500,LocationID:'LOC-01',VendorID:'V1',PORef:'PO1',InvoiceNo:'INV1',Amount:500,GSTAmount:90,ReceiptID:'BATCH1',Status:'RECEIVED',Notes:'Original'},
@@ -78,6 +78,14 @@ for(const extra of [{qty:4},{vendorId:'V2'}]) {
 {
   const f=fixture({receipt:false});
   f.ctx.processOrderEdit({actor:'test',data:{orderId:'PO1',reason:'Fix price',qty:10,vendorId:'V1',date:'2026-10-20',expected:{qty:10,vendorId:'V1',date:f.dates},unitPrice:0,notes:'Replacement note'}});
-  assert.equal(f.readAll('PURCHASE_ORDERS')[0].Notes,'Replacement note | Unit price ₹0');
+  assert.equal(f.readAll('PURCHASE_ORDERS')[0].Notes,'Replacement note');
+  assert.equal(f.readAll('PURCHASE_ORDERS')[0].UnitPrice,0);
+  assert.equal(f.ctx.listPurchaseOrders().find(o=>o.orderId==='PO1').unitPrice,0);
+}
+{
+  const f=fixture({receipt:false});
+  f.ctx.processOrderEdit({actor:'test',data:{orderId:'PO1',reason:'Set price',qty:10,vendorId:'V1',date:'2026-10-20',expected:{qty:10,vendorId:'V1',date:f.dates},unitPrice:45.5}});
+  assert.equal(f.ctx.listPurchaseOrders().find(o=>o.orderId==='PO1').unitPrice,45.5);
+  assert.throws(()=>f.ctx.processOrderEdit({actor:'test',data:{orderId:'PO1',reason:'Stale price',qty:10,vendorId:'V1',date:'2026-10-20',expected:{qty:10,vendorId:'V1',date:f.dates,unitPrice:0}}}),/STALE_ENTRY/);
 }
 console.log('Purchase/receipt edit and delete checks passed; no live data used.');

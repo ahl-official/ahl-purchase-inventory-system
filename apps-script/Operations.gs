@@ -35,7 +35,7 @@ function listPurchaseOrders() {
   return readAll('PURCHASE_ORDERS').map(function (r) {
     var received = ledger.reduce(function (sum,l) { return l.Type === 'RECEIPT' && l.Status !== 'VOID' && l.PORef === r.OrderID ? sum + Number(l.Qty) : sum; },0);
     var p = getProduct(r.ProductID);
-    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId };
+    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId, unitPrice: r.UnitPrice === '' || r.UnitPrice == null ? null : Number(r.UnitPrice) };
   }).reverse();
 }
 
@@ -82,18 +82,18 @@ function processOrderCreateLines(payload) {
   var dispatchId = getConfig('DispatchLocationID','LOC-05');
   if (deliveryLocationId === dispatchId) throw new Error('VALIDATION: Dispatch is not a delivery destination.');
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
+  ensureColumn('PURCHASE_ORDERS','UnitPrice');
   var prepared = r.lines.map(function (line) {
     var p = getProduct(line.productId);
     if (!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
     var qty = positiveQuantity(line.qty, p, false);
     var price = line.unitPrice === '' || line.unitPrice === undefined || line.unitPrice === null ? '' : Number(line.unitPrice);
     if (price !== '' && (!isFinite(price) || price < 0)) throw new Error('VALIDATION: Enter a valid unit price.');
-    var notes = [String(r.notes || '').trim(), price === '' ? '' : 'Unit price ₹' + price].filter(Boolean).join(' | ');
-    return { product: p, productId: line.productId, qty: qty, notes: notes };
+    return { product: p, productId: line.productId, qty: qty, notes: String(r.notes || '').trim(), unitPrice: price };
   });
   var ids = prepared.map(function (line) {
     var id = nextId('PO');
-    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId});
+    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice});
     return id;
   });
   audit(payload.actor,'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});

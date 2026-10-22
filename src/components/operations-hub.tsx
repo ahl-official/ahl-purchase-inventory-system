@@ -25,7 +25,7 @@ import { cn } from '@/lib/utils';
 interface Stock { productId:string; headOfficeAvailable:number; headOfficeBalance:number; salonFloorBalance:number; pendingHandover:number; locationBalances?:Record<string,number>; }
 interface RequestRow { requestId:string; date:string; requestedBy?:string; productId:string; productName:string; qty:number; status:string; source:string; notes:string; }
 interface Handover { handoverId:string; productId:string; productName:string; qty:number; uom:string; actor:string; notes:string; toLocationId?:string; }
-interface Order { orderId:string; date:string; productId:string; productName:string; vendorId:string; qty:number; received:number; remaining:number; uom:string; status:string; deliveryLocationId:string; notes?:string; }
+interface Order { orderId:string; date:string; productId:string; productName:string; vendorId:string; qty:number; received:number; remaining:number; uom:string; status:string; deliveryLocationId:string; notes?:string; unitPrice?:number|null; }
 type History = MovementHistory;
 interface Data { myLocationId?:string; myUserId?:string; catalogue:Catalogue; dashboard:{stock:Stock[];openRequests:RequestRow[];pendingHandovers:Handover[]};orders:Order[];history:History[]; }
 type Tab='product'|'labels'|'report'|'stock'|'requests'|'deliveries'|'handovers'|'issue'|'retail'|'history';

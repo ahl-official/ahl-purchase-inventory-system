@@ -20,7 +20,7 @@ function fixture() {
   });
   vm.runInContext(readFileSync(new URL('../apps-script/Ledger.gs',import.meta.url),'utf8'),ctx);
   // Match the real positiveQuantity validator without overriding the handler under test.
-  vm.runInContext(readFileSync(new URL('../apps-script/Operations.gs',import.meta.url),'utf8').split('function getCatalogue()')[0],ctx);
+  vm.runInContext(readFileSync(new URL('../apps-script/Operations.gs',import.meta.url),'utf8').split('function listPurchaseOrders()')[0],ctx);
   const receive=(lines,extra={})=>ctx.processStockReceiveLines({actor:'test@example.com',data:{vendorId:'V1',lines,...extra}});
   return {receive,writes,orders};
 }

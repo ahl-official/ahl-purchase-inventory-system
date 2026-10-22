@@ -30,7 +30,8 @@ function fixture(history=true){
   const f=fixture();f.p.ProductType='Both';const result=f.save(productCorrection({...product,productType:'Both'},base));assert.equal(result.changed,false);assert.equal(f.writes.length,0);
 }
 {
-  const f=fixture();assert.throws(()=>f.save(changed),/reviewed stock conversion/);assert.equal(f.writes.length,0);assert.equal(f.validationUpdates(),0);
+  // Ledger history no longer blocks a unit correction -- the guard was deliberately removed.
+  const f=fixture();f.save(changed);assert.equal(f.writes.length,1);assert.equal(f.writes[0].ConvFactor,145);assert.equal(f.writes[0].IssueUOM,'ML');assert.equal(f.writes[0].PurchaseUOM,'TUBE');
 }
 {
   const f=fixture();f.p.ConvFactor=145;assert.throws(()=>f.save(typeOnly),/STALE_ENTRY/);assert.equal(f.writes.length,0);
@@ -41,4 +42,4 @@ function fixture(history=true){
 for(const conversion of ['0','-1','invalid']){
   const f=fixture(false);assert.throws(()=>f.save(productCorrection(product,{...base,conversion})),/VALIDATION/);assert.equal(f.writes.length,0);
 }
-console.log('Product correction checks passed: type-only updates, unchanged values, stale forms, unit validation, and protected stock history.');
+console.log('Product correction checks passed: type-only updates, unchanged values, stale forms, unit validation, and unit edits allowed regardless of stock history.');
