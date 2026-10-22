@@ -267,8 +267,7 @@ function getOperations(payload) {
 }
 
 /** Keep invoice metadata and complete invoices even at the recent-history cutoff. */
-function getMovementHistory() {
-  function key(r) {
+function movementHistoryKey(r) {
     if (r.Type !== 'RECEIPT') return JSON.stringify(['movement',r.TxnID]);
     var prefix=['receipt',String(r.VendorID || ''),r.Status === 'VOID' ? 'VOID' : 'POSTED'];
     var invoice=String(r.InvoiceNo || '').trim();
@@ -276,10 +275,11 @@ function getMovementHistory() {
     if (r.ReceiptID) return JSON.stringify(prefix.concat(['batch',String(r.ReceiptID)]));
     if (r.BillPhotoURL) return JSON.stringify(prefix.concat(['bill',String(r.BillPhotoURL)]));
     return JSON.stringify(prefix.concat(['transaction',r.TxnID]));
-  }
+}
+function getMovementHistory() {
   var rows=readAll('LEDGER'), keys={};
-  rows.slice(-500).forEach(function(r){keys[key(r)]=true;});
-  return rows.filter(function(r){return keys[key(r)];}).reverse().map(function(r){
+  rows.slice(-500).forEach(function(r){keys[movementHistoryKey(r)]=true;});
+  return rows.filter(function(r){return keys[movementHistoryKey(r)];}).reverse().map(function(r){
     return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || '',vendorId:String(r.VendorID || ''),invoiceNo:String(r.InvoiceNo || ''),receiptId:String(r.ReceiptID || ''),poRef:String(r.PORef || ''),billPhotoUrl:String(r.BillPhotoURL || ''),amount:r.Amount === '' || r.Amount == null ? null : Number(r.Amount),gstAmount:r.GSTAmount === '' || r.GSTAmount == null ? null : Number(r.GSTAmount)};
   });
 }

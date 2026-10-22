@@ -80,6 +80,8 @@ function doPost(e) {
         'operations.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'catalogue.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'order.create':['PurchaseCoordinator','Admin'], 'order.cancel':['PurchaseCoordinator','Admin'],
+        'order.edit':['PurchaseCoordinator','Admin'], 'order.delete':['PurchaseCoordinator','Admin'],
+        'receipt.edit':['PurchaseCoordinator','Admin'], 'receipt.delete':['PurchaseCoordinator','Admin'],
         'handover.cancel':['PurchaseCoordinator','Admin'],
         'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin'],
         'product.create':['PurchaseCoordinator','Admin'],
@@ -118,6 +120,10 @@ function doPost(e) {
         case 'catalogue.read': result=getCatalogue(); break;
         case 'order.create': result=processOrderCreate(payload); break;
         case 'order.cancel': result=processOrderCancel(payload); break;
+        case 'order.edit': result=processOrderEdit(payload); break;
+        case 'order.delete': result=processOrderDelete(payload); break;
+        case 'receipt.edit': result=processReceiptChange(payload,false); break;
+        case 'receipt.delete': result=processReceiptChange(payload,true); break;
         case 'handover.cancel': result=processHandoverCancel(payload); break;
         case 'stock.adjust': result=processStockAdjustment(payload); break;
         case 'product.create': result=processProductCreate(payload); break;

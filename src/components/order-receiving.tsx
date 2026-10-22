@@ -10,6 +10,7 @@ import type { AppsScriptAction } from '@/lib/api';
 export interface ReceivingOrder {
   orderId:string; date:string; productId:string; productName:string; vendorId:string;
   qty:number; received:number; remaining:number; uom:string; status:string; deliveryLocationId:string;
+  notes?:string;
 }
 
 // Order dates are business dates in India, independent of the browser's timezone.

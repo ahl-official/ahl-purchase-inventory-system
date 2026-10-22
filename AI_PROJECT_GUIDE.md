@@ -281,6 +281,17 @@ ReceiptID lazily on their normal write path; do not backfill or rewrite old ledg
 historical amounts are shown as unrecorded. Head Office shows invoices across delivery locations;
 other locations show their own receipt subtotals. Check with `node tests/invoice-history.mjs`.
 
+Purchase/receipt edit and delete icons are available to PurchaseCoordinator and Admin. Actions
+`order.edit`, `order.delete`, `receipt.edit`, and `receipt.delete` pass through the normal lock,
+authorization and idempotency flow. A purchase quantity cannot fall below received quantity;
+received orders keep their vendor and cannot be deleted until their receipts are corrected.
+Receipt actions require the complete current invoice group, a reason, and enough available stock
+after accounting for pending handovers. Receipt delete voids originals; edit voids originals and
+appends replacement receipts in the same Sheet range write. Original amounts/quantities stay
+available in history, with actor/reason and audit references. This is an application-controlled
+correction path; never manually delete or rewrite ledger rows. Product and location identities
+remain fixed during receipt editing. Run `node tests/entry-changes.mjs` for isolated checks.
+
 Run the checks appropriate to the change:
 
 ```powershell
