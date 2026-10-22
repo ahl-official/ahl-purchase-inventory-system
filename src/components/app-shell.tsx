@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
-import { ArrowLeftRight, ClipboardList, Gauge, LayoutGrid, LogOut } from "lucide-react";
+import { ArrowLeftRight, ClipboardList, Gauge, LayoutGrid, LogOut, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -33,6 +33,12 @@ const NAV: NavItem[] = [
     label: "Stock Out",
     icon: ArrowLeftRight,
     roles: ["ProductDistributor", "Admin"],
+  },
+  {
+    href: "/products",
+    label: "Products",
+    icon: Package,
+    roles: ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   },
   { href: "/admin", label: "Admin", icon: LayoutGrid, roles: ["Admin"] },
 ];

@@ -101,7 +101,7 @@ function processOrderCreateLines(payload) {
 }
 
 function processListAdd(payload) {
-  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
   var r = payload.data || {};
   var type = String(r.type || '');
   if (type !== 'VENDOR' && type !== 'RECEIVER') throw new Error('VALIDATION: Unsupported list.');
@@ -187,7 +187,7 @@ function allowBothProductType() {
 
 /** Purchase coordinator adds a product; runs inside the doPost lock, so the next-ID and duplicate checks cannot race. */
 function processProductCreate(payload) {
-  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
   var r=payload.data || {}, name=String(r.name || '').replace(/\s+/g,' ').trim();
   var norm=function(s){return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'');};
   var uom=function(v,label){var u=String(v || '').trim().toUpperCase();if(!/^[A-Z]{1,10}$/.test(u)) throw new Error('VALIDATION: Choose the '+label+'.');return u;};
@@ -336,7 +336,7 @@ function processProductEditUnit(payload) {
 }
 
 function processProductDelete(payload) {
-  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
   var r=payload.data || {};
   var p=getProduct(r.productId);
   if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');
@@ -347,7 +347,7 @@ function processProductDelete(payload) {
 }
 
 function processProductRestore(payload) {
-  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
   var r=payload.data || {};
   var p=getProduct(r.productId);
   if(!p) throw new Error('UNKNOWN_PRODUCT: Product not found.');

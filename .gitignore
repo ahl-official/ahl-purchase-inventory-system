@@ -28,6 +28,7 @@
 *.key.json
 *service-account*.json
 *credentials*.json
+ahl-sheets-automation-*.json
 
 # debug
 npm-debug.log*

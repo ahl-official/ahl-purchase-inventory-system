@@ -84,12 +84,12 @@ function doPost(e) {
         'receipt.edit':['PurchaseCoordinator','Admin'], 'receipt.delete':['PurchaseCoordinator','Admin'],
         'handover.cancel':['PurchaseCoordinator','Admin'],
         'stock.adjust':['PurchaseCoordinator','ProductDistributor','Admin'],
-        'product.create':['PurchaseCoordinator','Admin'],
-        'product.setVendor':['PurchaseCoordinator','Admin'],
+        'product.create':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'product.setVendor':['PurchaseCoordinator','ProductDistributor','Admin'],
         'product.editUnit':['PurchaseCoordinator','ProductDistributor','Admin'],
-        'product.delete':['PurchaseCoordinator','Admin'],
-        'product.restore':['PurchaseCoordinator','Admin'],
-        'list.add':['PurchaseCoordinator','Admin'],
+        'product.delete':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'product.restore':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'list.add':['PurchaseCoordinator','ProductDistributor','Admin'],
         'inventoryReport.read':['PurchaseCoordinator','Admin']
       };
       if(payload.action !== 'auth.login') {

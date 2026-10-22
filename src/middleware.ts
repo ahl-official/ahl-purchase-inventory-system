@@ -52,6 +52,7 @@ export default auth((req) => {
   if (path.startsWith("/admin") && role !== "Admin") {
     return NextResponse.redirect(new URL("/", nextUrl));
   }
+  // /products is accessible to all authenticated roles
   // Dashboard is the one screen Satvik and Hitesh share -- both roles (and
   // Admin) can see it; every other route above stays exclusive to its role.
 

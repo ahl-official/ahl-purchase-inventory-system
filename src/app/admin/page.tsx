@@ -62,7 +62,7 @@ export default function AdminDashboard() {
             <p className="mt-1 text-xs text-muted-foreground">Recounts, custody and technician issues.</p>
             <ArrowRight className="mt-3 size-4 text-muted-foreground transition-transform group-hover:translate-x-1" />
           </Link>
-          <Link href="/admin/products" className="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-brand/40">
+          <Link href="/products" className="group rounded-xl border border-border bg-card p-4 transition-colors hover:border-brand/40">
             <Package className="size-5 text-brand" />
             <p className="mt-3 text-sm font-semibold text-foreground">Product catalogue</p>
             <p className="mt-1 text-xs text-muted-foreground">Add, archive or restore products.</p>
