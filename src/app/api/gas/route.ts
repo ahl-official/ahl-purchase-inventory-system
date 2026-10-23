@@ -13,9 +13,13 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { callAppsScript, type AppsScriptAction } from "@/lib/api";
 import { readDirect, DIRECT_READ_ACTIONS, type DirectReadAction } from "@/lib/sheets-direct";
+import { writeDirect, DIRECT_WRITE_ACTIONS, type DirectWriteAction } from "@/lib/sheets-write";
 
 function isDirectReadAction(action: AppsScriptAction): action is DirectReadAction {
   return (DIRECT_READ_ACTIONS as readonly string[]).includes(action);
+}
+function isDirectWriteAction(action: AppsScriptAction): action is DirectWriteAction {
+  return (DIRECT_WRITE_ACTIONS as readonly string[]).includes(action);
 }
 
 /** `CODE: message` -> {error, message}, the same split Code.gs does for a thrown handler error. */
@@ -128,6 +132,23 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
       }
       // else: infra problem with the direct path itself -- fall through to Apps Script.
+    }
+  }
+
+  // Mutations ported to the service-account write path: try it first, but unlike reads,
+  // only an "action not yet ported" result falls back to Apps Script. Once writeDirect
+  // has marked an operation STARTED, a failure is a real answer -- silently retrying a
+  // mutation through a second path is a correctness risk reads don't have.
+  if (isDirectWriteAction(action)) {
+    try {
+      const data_ = await writeDirect(action, actor, (data as Record<string, unknown>) ?? {});
+      return NextResponse.json({ ok: true, data: data_ }, { status: 200 });
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (!raw.startsWith("DIRECT_WRITE_UNAVAILABLE")) {
+        return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
+      }
+      // else: not yet ported -- fall through to Apps Script.
     }
   }
 
