@@ -210,6 +210,7 @@ function listPurchaseOrders(ctx: Ctx) {
       vendorId: r.VendorID, qty: Number(r.QtyOrdered), uom: r.UOM, received, remaining: Math.max(0, Number(r.QtyOrdered) - received),
       requestId: r.RequestID || "", status: r.Status === "CANCELLED" ? "CANCELLED" : received >= Number(r.QtyOrdered) ? "RECEIVED" : received > 0 ? "PARTIAL" : "ORDERED",
       notes: r.Notes || "", deliveryLocationId: r.DeliveryLocationID || headOfficeId,
+      unitPrice: r.UnitPrice === "" || r.UnitPrice == null ? null : Number(r.UnitPrice), batchId: r.BatchID || r.OrderID,
     };
   }).reverse();
 }

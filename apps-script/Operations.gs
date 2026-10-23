@@ -35,7 +35,7 @@ function listPurchaseOrders() {
   return readAll('PURCHASE_ORDERS').map(function (r) {
     var received = ledger.reduce(function (sum,l) { return l.Type === 'RECEIPT' && l.Status !== 'VOID' && l.PORef === r.OrderID ? sum + Number(l.Qty) : sum; },0);
     var p = getProduct(r.ProductID);
-    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId, unitPrice: r.UnitPrice === '' || r.UnitPrice == null ? null : Number(r.UnitPrice) };
+    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId, unitPrice: r.UnitPrice === '' || r.UnitPrice == null ? null : Number(r.UnitPrice), batchId: r.BatchID || r.OrderID };
   }).reverse();
 }
 
@@ -61,7 +61,8 @@ function processOrderCreate(payload) {
   }
   var id=nextId('PO');
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
-  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId});
+  ensureColumn('PURCHASE_ORDERS','BatchID');
+  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId,BatchID:id});
   if(r.requestId) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
   audit(payload.actor,'order.create',id,r);
   return {orderId:id, deliveryLocationId:deliveryLocationId};
@@ -83,6 +84,7 @@ function processOrderCreateLines(payload) {
   if (deliveryLocationId === dispatchId) throw new Error('VALIDATION: Dispatch is not a delivery destination.');
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
   ensureColumn('PURCHASE_ORDERS','UnitPrice');
+  ensureColumn('PURCHASE_ORDERS','BatchID');
   var prepared = r.lines.map(function (line) {
     var p = getProduct(line.productId);
     if (!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
@@ -91,9 +93,13 @@ function processOrderCreateLines(payload) {
     if (price !== '' && (!isFinite(price) || price < 0)) throw new Error('VALIDATION: Enter a valid unit price.');
     return { product: p, productId: line.productId, qty: qty, notes: String(r.notes || '').trim(), unitPrice: price };
   });
+  // Every line created by this one call shares the first line's OrderID as its BatchID, so the
+  // whole multi-product order can be displayed and tracked together, like one invoice.
+  var batchId = '';
   var ids = prepared.map(function (line) {
     var id = nextId('PO');
-    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice});
+    if (!batchId) batchId = id;
+    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice,BatchID:batchId});
     return id;
   });
   audit(payload.actor,'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});
