@@ -10,14 +10,14 @@
 import { createSign } from "node:crypto";
 import { recentHistory } from './movement-history';
 
-type Row = Record<string, string | number>;
-interface Ctx {
+export type Row = Record<string, string | number>;
+export interface Ctx {
   products: Row[]; people: Row[]; lists: Row[]; ledger: Row[];
   purchaseOrders: Row[]; requests: Row[]; openingCounts: Row[];
   configCache: Record<string, string> | null;
 }
 
-function requireEnv(name: "GOOGLE_SERVICE_ACCOUNT_KEY" | "GOOGLE_SHEET_ID"): string {
+export function requireEnv(name: "GOOGLE_SERVICE_ACCOUNT_KEY" | "GOOGLE_SHEET_ID"): string {
   const v = process.env[name];
   if (!v) throw new Error(`DIRECT_READ_UNAVAILABLE: Missing ${name}.`);
   return v;
@@ -63,7 +63,7 @@ function parseTable(values: unknown[][]): Row[] {
   });
 }
 
-async function loadContext(): Promise<Ctx> {
+export async function loadContext(): Promise<Ctx> {
   const sheetId = requireEnv("GOOGLE_SHEET_ID");
   const token = await getAccessToken();
   const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchGet`);
@@ -86,26 +86,26 @@ async function loadContext(): Promise<Ctx> {
 
 // ---------------------------------------------------------------- small helpers, ported 1:1 from Validation.gs / Db.gs
 
-function isTruthy(value: unknown): boolean {
+export function isTruthy(value: unknown): boolean {
   if (value === true) return true;
   if (value === false || value === "" || value === null || value === undefined) return false;
   const s = String(value).trim().toLowerCase();
   return s === "true" || s === "yes" || s === "y" || s === "1";
 }
-function appRole(value: unknown): string {
+export function appRole(value: unknown): string {
   const role = String(value ?? "").trim().toLowerCase().replace(/[^a-z]/g, "");
   if (role === "admin" || role === "management" || role === "owner") return "Admin";
   if (role === "purchase" || role === "purchasecoordinator") return "PurchaseCoordinator";
   if (role === "distribution" || role === "productdistributor" || role === "distributor") return "ProductDistributor";
   return "";
 }
-function findRecord(rows: Row[], column: string, value: unknown): Row | null {
+export function findRecord(rows: Row[], column: string, value: unknown): Row | null {
   const target = String(value).trim().toLowerCase();
   return rows.find((r) => String(r[column]).trim().toLowerCase() === target) || null;
 }
-function getUser(ctx: Ctx, actor: string): Row | null { return findRecord(ctx.people, "Email", actor); }
-function getProduct(ctx: Ctx, productId: unknown): Row | null { return findRecord(ctx.products, "ProductID", productId); }
-function getConfig(ctx: Ctx, key: string, fallback: string): string {
+export function getUser(ctx: Ctx, actor: string): Row | null { return findRecord(ctx.people, "Email", actor); }
+export function getProduct(ctx: Ctx, productId: unknown): Row | null { return findRecord(ctx.products, "ProductID", productId); }
+export function getConfig(ctx: Ctx, key: string, fallback: string): string {
   if (!ctx.configCache) {
     ctx.configCache = {};
     ctx.lists.forEach((row) => { if (row.Type === "SETTING" && row.Code) ctx.configCache![String(row.Code).trim()] = String(row.Name); });
@@ -113,7 +113,7 @@ function getConfig(ctx: Ctx, key: string, fallback: string): string {
   const v = ctx.configCache[key];
   return v === undefined || v === "" ? fallback : v;
 }
-function getConfigNumber(ctx: Ctx, key: string, fallback: number): number {
+export function getConfigNumber(ctx: Ctx, key: string, fallback: number): number {
   const n = Number(getConfig(ctx, key, String(fallback)));
   return isNaN(n) ? fallback : n;
 }
@@ -121,11 +121,11 @@ function getConfigNumber(ctx: Ctx, key: string, fallback: number): number {
 // Sheets' date serial (days since 1899-12-30) -> UTC ISO string. The spreadsheet's
 // fixed Asia/Kolkata (+5:30, no DST) timezone is set in apps-script/appsscript.json.
 const IST_OFFSET_MS = 330 * 60 * 1000;
-function serialToDate(serial: unknown): Date {
+export function serialToDate(serial: unknown): Date {
   const n = Number(serial);
   return new Date(Math.round((n - 25569) * 86400000) - IST_OFFSET_MS);
 }
-function serialToIso(serial: unknown): string {
+export function serialToIso(serial: unknown): string {
   if (serial === "" || serial === null || serial === undefined) return "";
   const n = Number(serial);
   return isFinite(n) ? serialToDate(n).toISOString() : "";
@@ -135,7 +135,7 @@ function istMonthString(d: Date): string {
   return `${parts.find((p) => p.type === "year")!.value}-${parts.find((p) => p.type === "month")!.value}`;
 }
 
-function actorLocation(ctx: Ctx, actor: string): string {
+export function actorLocation(ctx: Ctx, actor: string): string {
   const user = getUser(ctx, actor) || {};
   const ho = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
   if (appRole(user.Role) === "PurchaseCoordinator") return ho;
@@ -143,7 +143,7 @@ function actorLocation(ctx: Ctx, actor: string): string {
   const known = ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === loc && isTruthy(v.Active) && v.Extra);
   return known && loc !== ho ? loc : getConfig(ctx, "SalonFloorLocationID", "LOC-02");
 }
-function openingLocationForActor(ctx: Ctx, actor: string): string {
+export function openingLocationForActor(ctx: Ctx, actor: string): string {
   const role = appRole((getUser(ctx, actor) || {}).Role);
   if (role === "PurchaseCoordinator") return getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
   if (role === "ProductDistributor") return actorLocation(ctx, actor);
@@ -152,7 +152,7 @@ function openingLocationForActor(ctx: Ctx, actor: string): string {
 
 // ---------------------------------------------------------------- balances, ported 1:1 from Validation.gs
 
-function computeBalanceFromRows(rows: Row[], productId: unknown, locationId: string): number {
+export function computeBalanceFromRows(rows: Row[], productId: unknown, locationId: string): number {
   const wantAll = locationId === "ALL";
   let balance = 0;
   for (const row of rows) {
@@ -166,7 +166,7 @@ function computeBalanceFromRows(rows: Row[], productId: unknown, locationId: str
   }
   return balance;
 }
-function computePendingHandoverOutFromRows(rows: Row[], productId: unknown, locationId: string): number {
+export function computePendingHandoverOutFromRows(rows: Row[], productId: unknown, locationId: string): number {
   return rows.reduce((sum, row) => {
     if (String(row.ProductID).trim() !== String(productId).trim()) return sum;
     if (String(row.LocationID).trim() !== String(locationId).trim()) return sum;
