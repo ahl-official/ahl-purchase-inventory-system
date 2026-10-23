@@ -80,9 +80,12 @@ function loadModule(compiled, requireImpl, fetchImpl, filename) {
 
 function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
   const tabs = {
-    PRODUCTS: { headers: ['ProductID'], rows: [] },
+    PRODUCTS: {
+      headers: ['ProductID', 'Name', 'CategoryID', 'IssueUOM', 'PurchaseUOM', 'ConvFactor', 'Cost', 'GSTPercent', 'VendorID', 'ReorderLevel', 'Active', 'Notes', 'ProductType'],
+      rows: [['PRD-0001', 'Shampoo', 'CAT-1', 'ML', 'BOTTLE', 500, 2, 0.18, 'VND-1', 5, true, '', 'Consumable']],
+    },
     PEOPLE: { headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'], rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active]] },
-    LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true]] },
+    LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true]] },
     LEDGER: { headers: ['ProductID'], rows: [] },
     PURCHASE_ORDERS: { headers: ['OrderID'], rows: [] },
     REQUESTS: { headers: ['RequestID'], rows: [] },
@@ -113,7 +116,7 @@ await (async () => {
   const result = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'New Vendor', operationId: id1 });
   assert.match(result.id, /^VND-/);
   assert.equal(result.name, 'New Vendor');
-  assert.equal(tabs.LISTS.rows.length, 2);
+  assert.equal(tabs.LISTS.rows.length, 3); // 2 baseline (vendor + category) + 1 new
   assert.equal(tabs.OPERATIONS.rows.find(r => r[0] === id1)[4], 'COMPLETED');
   assert.equal(mock.calls.append.some(c => c.tab === 'AUDIT'), true);
 })();
@@ -123,7 +126,7 @@ await (async () => {
   const { writeDirect, tabs } = fixture();
   const result = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'vela (well vibes)', operationId: opId() });
   assert.equal(result.id, 'VND-1');
-  assert.equal(tabs.LISTS.rows.length, 1);
+  assert.equal(tabs.LISTS.rows.length, 2); // baseline only, no new write
 })();
 
 await (async () => {
@@ -133,20 +136,20 @@ await (async () => {
   const first = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'Repeat Co', operationId: id });
   const second = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'Repeat Co', operationId: id });
   assert.deepEqual(first, second);
-  assert.equal(tabs.LISTS.rows.length, 2); // only the first call actually wrote
+  assert.equal(tabs.LISTS.rows.length, 3); // only the first call actually wrote
 })();
 
 for (const data of [{ type: 'VENDOR', name: 'X' }, { type: 'NOT_A_TYPE', name: 'Valid Name' }]) {
   const { writeDirect, tabs } = fixture();
   await assert.rejects(() => writeDirect('list.add', 'purchase@ahl.com', { ...data, operationId: opId() }), /VALIDATION/);
-  assert.equal(tabs.LISTS.rows.length, 1); // nothing written on a rejected validation
+  assert.equal(tabs.LISTS.rows.length, 2); // nothing written on a rejected validation
 }
 
 await (async () => {
   // An inactive/wrong-role actor is refused before anything is read or written.
   const { writeDirect, tabs } = fixture({ role: 'Technician' });
   await assert.rejects(() => writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'Nope', operationId: opId() }), /FORBIDDEN/);
-  assert.equal(tabs.LISTS.rows.length, 1);
+  assert.equal(tabs.LISTS.rows.length, 2);
 })();
 
 await (async () => {
@@ -154,4 +157,94 @@ await (async () => {
   await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { operationId: opId() }), /DIRECT_WRITE_UNAVAILABLE/);
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, and unported-action fallback.');
+// ---- product.create ----
+await (async () => {
+  const { writeDirect, tabs, mock } = fixture();
+  const result = await writeDirect('product.create', 'purchase@ahl.com', {
+    name: 'Conditioner', productType: 'Consumable', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '250',
+    categoryId: 'CAT-1', vendorId: 'VND-1', cost: '10', gstPercent: '18', reorderLevel: '2', operationId: opId(),
+  });
+  assert.equal(result.productId, 'PRD-0002'); // sequential, after the fixture's PRD-0001
+  assert.equal(tabs.PRODUCTS.rows.length, 2);
+  assert.equal(mock.calls.append.some(c => c.tab === 'AUDIT' && c.values[0].includes('product.create')), true);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('product.create', 'purchase@ahl.com', { name: 'Shampoo', productType: 'Consumable', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '1', categoryId: 'CAT-1', operationId: opId() }), /DUPLICATE/);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('product.create', 'purchase@ahl.com', { name: 'New One', productType: 'Consumable', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '1', categoryId: 'NOPE', operationId: opId() }), /VALIDATION/);
+})();
+
+// ---- product.setVendor ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('product.setVendor', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', operationId: opId() });
+  assert.equal(result.vendorId, 'VND-1');
+  assert.equal(tabs.PRODUCTS.rows[0][8], 'VND-1'); // VendorID column
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('product.setVendor', 'purchase@ahl.com', { productId: 'PRD-9999', vendorId: 'VND-1', operationId: opId() }), /VALIDATION/);
+})();
+
+// ---- product.editUnit ----
+await (async () => {
+  // Type-only change: no unit fields sent, conversion/units untouched.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('product.editUnit', 'purchase@ahl.com', { productId: 'PRD-0001', productType: 'Both', operationId: opId() });
+  assert.equal(result.changed, true);
+  assert.equal(tabs.PRODUCTS.rows[0][12], 'Both'); // ProductType column
+  assert.equal(tabs.PRODUCTS.rows[0][4], 'BOTTLE'); // PurchaseUOM untouched
+})();
+await (async () => {
+  // Unit change with a matching `expected` snapshot succeeds -- no ledger-history guard (deliberately removed).
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('product.editUnit', 'purchase@ahl.com', {
+    productId: 'PRD-0001', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '450',
+    expected: { productType: 'Consumable', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: 500 }, operationId: opId(),
+  });
+  assert.equal(result.changed, true);
+  assert.equal(tabs.PRODUCTS.rows[0][5], 450); // ConvFactor column
+})();
+await (async () => {
+  // A stale `expected` (someone else already changed the product) is refused.
+  const { writeDirect, tabs } = fixture();
+  await assert.rejects(() => writeDirect('product.editUnit', 'purchase@ahl.com', {
+    productId: 'PRD-0001', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '450',
+    expected: { productType: 'Consumable', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: 999 }, operationId: opId(),
+  }), /STALE_ENTRY/);
+  assert.equal(tabs.PRODUCTS.rows[0][5], 500); // unchanged
+})();
+await (async () => {
+  // Nothing actually different -> no-op, no write.
+  const { writeDirect, mock } = fixture();
+  const result = await writeDirect('product.editUnit', 'purchase@ahl.com', { productId: 'PRD-0001', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '500', operationId: opId() });
+  assert.equal(result.changed, false);
+  assert.equal(mock.calls.update.some(c => c.tab === 'PRODUCTS'), false);
+})();
+
+// ---- product.delete / product.restore ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('product.delete', 'purchase@ahl.com', { productId: 'PRD-0001', notes: 'Discontinued', operationId: opId() });
+  assert.equal(result.changed, true);
+  assert.equal(tabs.PRODUCTS.rows[0][10], false); // Active column
+})();
+await (async () => {
+  // Already inactive -> no-op.
+  const { writeDirect, tabs } = fixture();
+  tabs.PRODUCTS.rows[0][10] = false;
+  const result = await writeDirect('product.delete', 'purchase@ahl.com', { productId: 'PRD-0001', notes: '', operationId: opId() });
+  assert.equal(result.changed, false);
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.PRODUCTS.rows[0][10] = false;
+  const result = await writeDirect('product.restore', 'purchase@ahl.com', { productId: 'PRD-0001', operationId: opId() });
+  assert.equal(result.changed, true);
+  assert.equal(tabs.PRODUCTS.rows[0][10], true);
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, and the product-management batch (create/setVendor/editUnit/delete/restore).');

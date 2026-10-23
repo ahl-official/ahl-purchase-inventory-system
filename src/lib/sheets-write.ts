@@ -25,7 +25,7 @@
  */
 import { createSign, randomUUID } from "node:crypto";
 import {
-  requireEnv, loadContext, isTruthy, appRole, getUser,
+  requireEnv, loadContext, isTruthy, appRole, getUser, getProduct,
   type Ctx, type Row,
 } from "./sheets-direct";
 
@@ -108,11 +108,17 @@ async function appendRow(token: string, sheetName: string, record: Record<string
   });
 }
 
-/** Ported 1:1 from Db.gs updateRecordFields, but re-reads the tab fresh first (see file header). */
-async function updateRow(token: string, sheetName: string, keyColumn: string, keyValue: string, changes: Record<string, unknown>): Promise<number> {
+/**
+ * Ported 1:1 from Db.gs updateRecordFields, but re-reads the tab fresh first (see file
+ * header). `verify`, when given, runs against that fresh row before writing -- a
+ * handler's STALE_ENTRY check re-armed against live data instead of just the ctx
+ * snapshot taken at the top of the request, shrinking the race window to this call.
+ */
+async function updateRow(token: string, sheetName: string, keyColumn: string, keyValue: string, changes: Record<string, unknown>, verify?: (fresh: Row) => void): Promise<number> {
   const { headers, rows } = await readTabRaw(token, sheetName);
   const target = rows.find((r) => String(r.data[keyColumn]).trim().toLowerCase() === String(keyValue).trim().toLowerCase());
   if (!target) throw new Error("NOT_FOUND: Record not found.");
+  if (verify) verify(target.data);
   for (const key of Object.keys(changes)) if (!headers.includes(key)) throw new Error(`SCHEMA_ERROR: Missing ${key}`);
   const merged = headers.map((h) => (h in changes ? changes[h] : (target.data[h] ?? "")));
   await sheetsFetch(token, `/values/${encodeURIComponent(sheetName)}!A${target.rowNumber}:${colLetter(headers.length)}${target.rowNumber}?valueInputOption=RAW`, {
@@ -163,9 +169,15 @@ async function failOperation(token: string, operationId: string, error: { error:
 }
 
 // ---------------------------------------------------------------- ported handlers
+//
+// Each handler calls auditWrite itself, exactly where its .gs counterpart calls
+// audit() -- ref and detail vary per action, so this stays per-handler rather than
+// one generic call in the dispatcher. Failure audit is centralized in writeDirect's
+// catch block, matching Code.gs's doPost (success audit lives in the handler, failure
+// audit lives in the wrapper).
 
 /** Ported 1:1 from Operations.gs processListAdd. */
-async function handleListAdd(token: string, ctx: Ctx, data: Record<string, unknown>) {
+async function handleListAdd(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
   const type = String(data.type || "");
   if (type !== "VENDOR" && type !== "RECEIVER") throw new Error("VALIDATION: Unsupported list.");
   const name = String(data.name || "").trim();
@@ -174,16 +186,137 @@ async function handleListAdd(token: string, ctx: Ctx, data: Record<string, unkno
   if (existing) return { id: existing.Code, name: existing.Name };
   const id = nextId(type === "VENDOR" ? "VND" : "RCV");
   await appendRow(token, "LISTS", { Type: type, Code: id, Name: name, Extra: "", Active: true });
+  await auditWrite(token, actor, "list.add", id, { type, name });
   return { id, name };
+}
+
+/**
+ * Ported 1:1 from Operations.gs processProductCreate, except: ProductID is a
+ * sequential counter (PRD-0001, PRD-0002, ...), not a random id like every other
+ * entity here. A lock made that collision-proof; this re-reads PRODUCTS immediately
+ * before minting the id to shrink (not eliminate) the race, per the accepted
+ * optimistic-concurrency trade-off -- two product creations within the same instant
+ * are the one scenario in this batch that isn't fully safe. Also drops
+ * allowBothProductType() (a spreadsheet dropdown-validation convenience, cosmetic
+ * only, not yet ported).
+ */
+async function handleProductCreate(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const name = String(data.name || "").replace(/\s+/g, " ").trim();
+  const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const uom = (v: unknown, label: string) => { const u = String(v || "").trim().toUpperCase(); if (!/^[A-Z]{1,10}$/.test(u)) throw new Error(`VALIDATION: Choose the ${label}.`); return u; };
+  if (name.length < 3 || name.length > 120) throw new Error("VALIDATION: Enter the product name (3-120 characters).");
+  const productType = String(data.productType || "");
+  if (!["Consumable", "Retail", "Both"].includes(productType)) throw new Error("VALIDATION: Choose Consumable, Retail or Both.");
+  const purchaseUom = uom(data.purchaseUom, "purchase unit");
+  const issueUom = uom(data.issueUom, "stock unit");
+  const conv = Number(data.convFactor);
+  if (!isFinite(conv) || conv <= 0) throw new Error("VALIDATION: Enter how much stock one purchase unit contains.");
+  if (purchaseUom === issueUom && conv !== 1) throw new Error("VALIDATION: Same purchase and stock unit must contain exactly 1.");
+  const has = (type: string, code: unknown) => ctx.lists.some((v) => v.Type === type && v.Code === code && isTruthy(v.Active));
+  if (!has("CATEGORY", data.categoryId)) throw new Error("VALIDATION: Choose the product category.");
+  const cost = data.cost === "" || data.cost == null ? 0 : Number(data.cost);
+  if (!isFinite(cost) || cost < 0) throw new Error("VALIDATION: Cost cannot be negative.");
+  const gst = Number(data.gstPercent || 0), reorder = Number(data.reorderLevel || 0);
+  if (!isFinite(gst) || gst < 0 || gst > 28) throw new Error("VALIDATION: GST must be between 0 and 28.");
+  if (!isFinite(reorder) || reorder < 0) throw new Error("VALIDATION: Reorder level cannot be negative.");
+  if (data.vendorId && !has("VENDOR", data.vendorId)) throw new Error("VALIDATION: Choose a listed supplier.");
+  if (ctx.products.some((p) => normName(String(p.Name)) === normName(name))) throw new Error("DUPLICATE: This product already exists.");
+
+  const { rows: liveProducts } = await readTabRaw(token, "PRODUCTS");
+  if (liveProducts.some((r) => normName(String(r.data.Name)) === normName(name))) throw new Error("DUPLICATE: This product already exists.");
+  const max = liveProducts.reduce((m, r) => { const n = /^PRD-(\d+)$/.exec(String(r.data.ProductID)); return n ? Math.max(m, Number(n[1])) : m; }, 0);
+  const id = `PRD-${String(max + 1).padStart(4, "0")}`;
+  await appendRow(token, "PRODUCTS", {
+    ProductID: id, Name: name, CategoryID: data.categoryId, IssueUOM: issueUom, PurchaseUOM: purchaseUom, ConvFactor: conv,
+    Cost: cost, GSTPercent: gst / 100, VendorID: data.vendorId || "", ReorderLevel: reorder, Active: true,
+    Notes: [String(data.brand || "").trim() ? `Brand: ${String(data.brand).trim()}` : "", String(data.notes || "").trim().slice(0, 300)].filter(Boolean).join(" | "),
+    ProductType: productType,
+  });
+  await auditWrite(token, actor, "product.create", id, data);
+  return { productId: id, name };
+}
+
+/** Ported 1:1 from Operations.gs processProductSetVendor. */
+async function handleProductSetVendor(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  if (!ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === data.vendorId && isTruthy(v.Active))) throw new Error("VALIDATION: Choose a listed vendor.");
+  if (!ctx.products.some((p) => p.ProductID === data.productId)) throw new Error("VALIDATION: Product not found.");
+  await updateRow(token, "PRODUCTS", "ProductID", String(data.productId), { VendorID: data.vendorId });
+  await auditWrite(token, actor, "product.setVendor", String(data.productId), data);
+  return { productId: data.productId, vendorId: data.vendorId };
+}
+
+/** Ported 1:1 from Operations.gs processProductEditUnit (the ledger-history guard was deliberately removed there). */
+async function handleProductEditUnit(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const productId = String(data.productId || "");
+  const p = getProduct(ctx, productId);
+  if (!p) throw new Error("UNKNOWN_PRODUCT: Product not found.");
+  const expected = data.expected as Record<string, unknown> | undefined;
+  const checkStale = (fresh: Row) => {
+    if (!expected) return;
+    if (String(expected.productType) !== String(fresh.ProductType || "Consumable") ||
+        String(expected.purchaseUom) !== String(fresh.PurchaseUOM) ||
+        String(expected.issueUom) !== String(fresh.IssueUOM) ||
+        Number(expected.convFactor) !== (Number(fresh.ConvFactor) || 1)) {
+      throw new Error("STALE_ENTRY: This product changed after the form was loaded. Refresh and review the current product settings before saving.");
+    }
+  };
+  checkStale(p);
+  const changes: Record<string, unknown> = {};
+  const productType = data.productType ? String(data.productType) : "";
+  if (productType) {
+    if (!["Consumable", "Retail", "Both"].includes(productType)) throw new Error("VALIDATION: Choose Consumable, Retail or Both.");
+    if (productType !== p.ProductType) changes.ProductType = productType;
+  }
+  if (data.purchaseUom || data.issueUom || data.convFactor != null) {
+    const uom = (v: unknown, label: string) => { const u = String(v || "").trim().toUpperCase(); if (!/^[A-Z]{1,10}$/.test(u)) throw new Error(`VALIDATION: Choose the ${label}.`); return u; };
+    const purchaseUom = uom(data.purchaseUom || p.PurchaseUOM, "purchase unit");
+    const issueUom = uom(data.issueUom || p.IssueUOM, "stock unit");
+    const conv = Number(data.convFactor != null ? data.convFactor : p.ConvFactor);
+    if (!isFinite(conv) || conv <= 0) throw new Error("VALIDATION: Enter how much stock one purchase unit contains.");
+    if (purchaseUom === issueUom && conv !== 1) throw new Error("VALIDATION: Same purchase and stock unit must contain exactly 1.");
+    const unitChanged = purchaseUom !== p.PurchaseUOM || issueUom !== p.IssueUOM || conv !== Number(p.ConvFactor);
+    if (unitChanged) { changes.PurchaseUOM = purchaseUom; changes.IssueUOM = issueUom; changes.ConvFactor = conv; }
+  }
+  if (!Object.keys(changes).length) return { productId, changed: false };
+  await updateRow(token, "PRODUCTS", "ProductID", productId, changes, checkStale);
+  await auditWrite(token, actor, "product.editUnit", productId, { before: { productType: p.ProductType, purchaseUom: p.PurchaseUOM, issueUom: p.IssueUOM, convFactor: p.ConvFactor }, changes, notes: data.notes || "" });
+  return { productId, changed: true };
+}
+
+/** Ported 1:1 from Operations.gs processProductDelete (soft delete via Active flag). */
+async function handleProductDelete(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const productId = String(data.productId || "");
+  const p = getProduct(ctx, productId);
+  if (!p) throw new Error("UNKNOWN_PRODUCT: Product not found.");
+  if (!isTruthy(p.Active)) return { productId, changed: false };
+  await updateRow(token, "PRODUCTS", "ProductID", productId, { Active: false });
+  await auditWrite(token, actor, "product.delete", productId, { name: p.Name, notes: data.notes || "" });
+  return { productId, changed: true };
+}
+
+/** Ported 1:1 from Operations.gs processProductRestore. */
+async function handleProductRestore(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const productId = String(data.productId || "");
+  const p = getProduct(ctx, productId);
+  if (!p) throw new Error("UNKNOWN_PRODUCT: Product not found.");
+  if (isTruthy(p.Active)) return { productId, changed: false };
+  await updateRow(token, "PRODUCTS", "ProductID", productId, { Active: true });
+  await auditWrite(token, actor, "product.restore", productId, { name: p.Name, notes: data.notes || "" });
+  return { productId, changed: true };
 }
 
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "list.add": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "product.create": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "product.setVendor": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "product.editUnit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "product.delete": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "product.restore": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -203,9 +336,13 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
   try {
     let result: unknown;
     switch (action) {
-      case "list.add": result = await handleListAdd(token, ctx, data); break;
+      case "list.add": result = await handleListAdd(token, actor, ctx, data); break;
+      case "product.create": result = await handleProductCreate(token, actor, ctx, data); break;
+      case "product.setVendor": result = await handleProductSetVendor(token, actor, ctx, data); break;
+      case "product.editUnit": result = await handleProductEditUnit(token, actor, ctx, data); break;
+      case "product.delete": result = await handleProductDelete(token, actor, ctx, data); break;
+      case "product.restore": result = await handleProductRestore(token, actor, ctx, data); break;
     }
-    await auditWrite(token, actor, action, (result as { id?: string })?.id || "", data);
     await completeOperation(token, operationId, result);
     return result;
   } catch (err) {
