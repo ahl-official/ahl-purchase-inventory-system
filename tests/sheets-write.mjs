@@ -22,18 +22,48 @@ function compile(relPath) {
 const sheetsDirectCompiled = compile('../src/lib/sheets-direct.ts');
 const sheetsWriteCompiled = compile('../src/lib/sheets-write.ts');
 const movementHistoryCompiled = compile('../src/lib/movement-history.ts');
+const driveWriteCompiled = compile('../src/lib/drive-write.ts');
 
 const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const FAKE_PRIVATE_KEY = privateKey.export({ type: 'pkcs8', format: 'pem' });
 
-// An in-memory spreadsheet: { TAB: { headers: string[], rows: unknown[][] } }.
+// An in-memory spreadsheet: { TAB: { headers: string[], rows: unknown[][] } }, plus a tiny
+// in-memory Drive (folders + uploaded files) for drive-write.ts's calls.
 function sheetsMock(tabs) {
-  const calls = { append: [], update: [] };
+  const calls = { append: [], update: [], driveUpload: [], drivePermission: [] };
+  const drive = { folders: {}, nextId: 1 };
   function tabName(url) { return decodeURIComponent(url.match(/\/values\/([^!]+)!/)[1]); }
   async function fetchImpl(url, init) {
     const u = String(url);
     if (u.includes('oauth2.googleapis.com')) {
       return { ok: true, status: 200, json: async () => ({ access_token: 'TEST_TOKEN', expires_in: 3600 }) };
+    }
+    if (u.includes('/upload/drive/v3/files')) {
+      const id = `FILE-${drive.nextId++}`;
+      calls.driveUpload.push({ id, contentType: (init.headers || {})['Content-Type'] || init.headers.get?.('Content-Type') });
+      return { ok: true, status: 200, json: async () => ({ id, webViewLink: `https://drive.google.com/file/d/${id}/view` }) };
+    }
+    if (u.includes('/drive/v3/files') && u.includes('/permissions')) {
+      calls.drivePermission.push({ url: u, body: init.body });
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    if (u.includes('/drive/v3/files')) {
+      const method = (init && init.method) || 'GET';
+      if (method === 'GET') {
+        const q = decodeURIComponent(new URL(u).searchParams.get('q') || '');
+        const nameMatch = q.match(/name = '([^']*)'/);
+        const parentMatch = q.match(/'([^']+)' in parents/);
+        const name = nameMatch ? nameMatch[1] : null;
+        const parent = parentMatch ? parentMatch[1] : null;
+        const match = Object.values(drive.folders).find((f) => f.name === name && (f.parent || null) === parent);
+        return { ok: true, status: 200, json: async () => ({ files: match ? [{ id: match.id, name: match.name }] : [] }) };
+      }
+      if (method === 'POST') {
+        const body = JSON.parse(init.body);
+        const id = `FOLDER-${drive.nextId++}`;
+        drive.folders[id] = { id, name: body.name, parent: (body.parents || [])[0] || null };
+        return { ok: true, status: 200, json: async () => ({ id }) };
+      }
     }
     // sheets-direct.ts's loadContext() reads every tab in one batchGet call, unlike
     // sheets-write.ts's per-tab reads -- the mock has to answer both shapes.
@@ -133,9 +163,17 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
   const movementHistoryExports = loadModule(movementHistoryCompiled, require, mock.fetchImpl, 'movement-history.js');
   const baseRequire = (path) => (path === './movement-history' ? movementHistoryExports : require(path));
   const sheetsDirectExports = loadModule(sheetsDirectCompiled, baseRequire, mock.fetchImpl, 'sheets-direct.js');
-  // sheets-write.ts does `require("./sheets-direct")` / `require("./movement-history")` --
-  // intercept those two specifiers and hand back the already-loaded modules, without touching disk.
-  const writeRequire = (path) => (path === './sheets-direct' ? sheetsDirectExports : path === './movement-history' ? movementHistoryExports : require(path));
+  // drive-write.ts does `require("./sheets-direct")` too, for requireEnv -- same interception.
+  const driveRequire = (path) => (path === './sheets-direct' ? sheetsDirectExports : require(path));
+  const driveWriteExports = loadModule(driveWriteCompiled, driveRequire, mock.fetchImpl, 'drive-write.js');
+  // sheets-write.ts does `require("./sheets-direct")` / `require("./movement-history")` /
+  // `require("./drive-write")` -- intercept those specifiers and hand back the already-loaded
+  // modules, without touching disk.
+  const writeRequire = (path) => (
+    path === './sheets-direct' ? sheetsDirectExports :
+    path === './movement-history' ? movementHistoryExports :
+    path === './drive-write' ? driveWriteExports : require(path)
+  );
   const sheetsWrite = loadModule(sheetsWriteCompiled, writeRequire, mock.fetchImpl, 'sheets-write.js');
 
   return { mock, tabs, writeDirect: sheetsWrite.writeDirect, sheetsDirect: sheetsDirectExports };
@@ -850,10 +888,55 @@ await (async () => {
   const { writeDirect } = fixture({ role: 'ProductDistributor' });
   await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', locationId: 'LOC-03', operationId: opId() }), /FORBIDDEN/);
 })();
+// ---- stock.receive with a bill/product photo (Drive) ----
+const fakeJpeg = Buffer.from('not a real jpeg, just test bytes').toString('base64');
 await (async () => {
-  // A request that attaches a bill photo isn't ported yet -- falls back to Apps Script.
+  const { writeDirect, tabs, mock } = fixture();
+  const result = await writeDirect('stock.receive', 'purchase@ahl.com', {
+    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, operationId: opId(),
+  });
+  assert.match(result.billUrl, /^https:\/\/drive\.google\.com\/file\/d\//);
+  const h = tabs.LEDGER.headers;
+  assert.equal(tabs.LEDGER.rows[0][h.indexOf('BillPhotoURL')], result.billUrl);
+  assert.equal(mock.calls.driveUpload.length, 1);
+  assert.equal(mock.calls.drivePermission.length, 0); // BillPublicLink defaults to No
+})();
+await (async () => {
+  // BillPublicLink=Yes (a LISTS SETTING row) makes the uploaded file link-shareable.
+  const { writeDirect, tabs, mock } = fixture();
+  tabs.LISTS.rows.push(rowFor(tabs, 'LISTS', { Type: 'SETTING', Code: 'BillPublicLink', Name: 'Yes', Active: true }));
+  await writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, operationId: opId() });
+  assert.equal(mock.calls.drivePermission.length, 1);
+})();
+await (async () => {
+  // A second, distinct product photo is stored separately from the bill photo.
+  const { writeDirect, tabs, mock } = fixture();
+  const result = await writeDirect('stock.receive', 'purchase@ahl.com', {
+    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1',
+    photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, productPhoto: { base64: fakeJpeg, mimeType: 'image/png' }, operationId: opId(),
+  });
+  assert.notEqual(result.billUrl, result.productPhotoUrl);
+  const h = tabs.LEDGER.headers;
+  assert.notEqual(tabs.LEDGER.rows[0][h.indexOf('BillPhotoURL')], tabs.LEDGER.rows[0][h.indexOf('ProductPhotoURL')]);
+  assert.equal(mock.calls.driveUpload.length, 2);
+})();
+await (async () => {
   const { writeDirect } = fixture();
-  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: 'abc123' }, operationId: opId() }), /DIRECT_WRITE_UNAVAILABLE/);
+  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', {
+    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: fakeJpeg, mimeType: 'application/pdf' }, operationId: opId(),
+  }), /BILL_PHOTO_TYPE/);
+})();
+await (async () => {
+  // A multi-product bill's one shared photo lands on every line's row.
+  const { writeDirect, tabs } = fixture();
+  await writeDirect('stock.receive', 'purchase@ahl.com', {
+    vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', qty: 1 }, { productId: 'PRD-0002', qty: 1 }],
+    photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, operationId: opId(),
+  });
+  const h = tabs.LEDGER.headers;
+  const urls = tabs.LEDGER.rows.map((r) => r[h.indexOf('BillPhotoURL')]);
+  assert.equal(new Set(urls).size, 1);
+  assert.notEqual(urls[0], '');
 })();
 
 // ---- stock.receiveOrders / multi-line stock.receive ----
@@ -896,4 +979,4 @@ await (async () => {
   assert.equal(tabs.PRODUCTS.rows[0][ph.indexOf('Cost')], 450 / 500); // qtyBase = 1 * ConvFactor 500
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), and stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes, photo-attached fallback).');
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes), and bill/product photo storage via the mocked Drive API (upload, link-sharing opt-in, mime-type guard, shared multi-line photo).');
