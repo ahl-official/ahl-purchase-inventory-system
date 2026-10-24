@@ -95,7 +95,13 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
       rows: [],
     },
     PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
-    REQUESTS: { headers: ['RequestID', 'ProductID', 'Status'], rows: [['REQ-1', 'PRD-0001', 'OPEN']] },
+    REQUESTS: {
+      headers: ['RequestID', 'Date', 'ProductID', 'NewProductName', 'Qty', 'RequestedBy', 'Urgency', 'EstValue', 'Status', 'ApprovedBy', 'ApprovedAt', 'Actor', 'Notes', 'Source'],
+      rows: [
+        ['REQ-1', 0, 'PRD-0001', '', 1, 'U1', 'Normal', 2, 'OPEN', '', '', 'purchase@ahl.com', '', 'APP'],
+        ['REQ-2', 0, 'PRD-0001', '', 3, 'U1', 'Normal', 6, 'PENDING_APPROVAL', '', '', 'purchase@ahl.com', '', 'APP'],
+      ],
+    },
     OPENING_COUNTS: { headers: ['CountID'], rows: [] },
     OPERATIONS: { headers: ['OperationID', 'Date', 'Actor', 'Action', 'Status', 'Result'], rows: [] },
     AUDIT: { headers: ['AuditID', 'Timestamp', 'Actor', 'Action', 'Ref', 'Detail', 'Result'], rows: [] },
@@ -461,4 +467,85 @@ await (async () => {
   assert.equal(mock.calls.append.some((c) => c.tab === 'AUDIT' && c.values[0].includes('receipt.delete')), true);
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), and the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards).');
+// ---- purchase.request ----
+await (async () => {
+  // Under the (default) threshold, PurchaseCoordinator's own request lands straight as OPEN -- no approval step.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('purchase.request', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 10, requestedByUserId: 'U1', notes: 'Running low', operationId: opId() });
+  assert.equal(result.status, 'OPEN');
+  assert.equal(result.estValue, 20); // 10 * Cost(2)
+  assert.equal(tabs.REQUESTS.rows.length, 3); // 2 baseline + 1 new
+})();
+await (async () => {
+  // Hitesh (ProductDistributor) has no self-approval authority, threshold or not.
+  const { writeDirect } = fixture({ role: 'ProductDistributor' });
+  const result = await writeDirect('purchase.request', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, requestedByUserId: 'U1', notes: 'Need more', operationId: opId() });
+  assert.equal(result.status, 'PENDING_APPROVAL');
+})();
+await (async () => {
+  // Over the threshold without recording who approved it is refused.
+  const { writeDirect, tabs } = fixture();
+  await assert.rejects(() => writeDirect('purchase.request', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, estimatedValue: 6000, requestedByUserId: 'U1', notes: 'Big order', operationId: opId() }), /VALIDATION/);
+  assert.equal(tabs.REQUESTS.rows.length, 2);
+})();
+await (async () => {
+  // A product not yet in the catalogue is its own flagged, catalogue-less row.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('purchase.request', 'purchase@ahl.com', { newProductName: 'New Shampoo Brand', qty: 5, requestedByUserId: 'U1', notes: 'Found a new brand', operationId: opId() });
+  assert.equal(result.status, 'NEW_PRODUCT');
+  const h = tabs.REQUESTS.headers;
+  const row = tabs.REQUESTS.rows.find((r) => r[h.indexOf('NewProductName')] === 'New Shampoo Brand');
+  assert.equal(row[h.indexOf('ProductID')], '');
+})();
+await (async () => {
+  // Multi-product request, one row per product, same reason.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('purchase.request', 'purchase@ahl.com', {
+    lines: [{ productId: 'PRD-0001', qty: 2 }, { productId: 'PRD-0002', qty: 1 }], requestedByUserId: 'U1', notes: 'Bulk request', operationId: opId(),
+  });
+  assert.equal(result.requestIds.length, 2);
+  assert.equal(result.status, 'OPEN');
+  assert.equal(tabs.REQUESTS.rows.length, 4); // 2 baseline + 2 new
+})();
+
+// ---- purchase.approve ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('purchase.approve', 'purchase@ahl.com', { requestId: 'REQ-2', decision: 'APPROVE', operationId: opId() });
+  assert.equal(result.status, 'OPEN'); // has a ProductID, so approval opens it rather than flagging NEW_PRODUCT
+  const h = tabs.REQUESTS.headers, row = tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-2');
+  assert.equal(row[h.indexOf('ApprovedBy')], 'purchase@ahl.com');
+  // Deciding it again (no longer PENDING_APPROVAL) is refused.
+  await assert.rejects(() => writeDirect('purchase.approve', 'purchase@ahl.com', { requestId: 'REQ-2', decision: 'APPROVE', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('purchase.approve', 'purchase@ahl.com', { requestId: 'REQ-2', decision: 'REJECT', notes: 'Already in stock', operationId: opId() });
+  assert.equal(result.status, 'REJECTED');
+  const h = tabs.REQUESTS.headers, row = tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-2');
+  assert.match(String(row[h.indexOf('Notes')]), /Satvik: Already in stock/);
+})();
+await (async () => {
+  const { writeDirect } = fixture({ role: 'ProductDistributor' });
+  await assert.rejects(() => writeDirect('purchase.approve', 'purchase@ahl.com', { requestId: 'REQ-2', decision: 'APPROVE', operationId: opId() }), /FORBIDDEN/);
+})();
+
+// ---- purchase.approveMany ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.REQUESTS.rows.push(rowFor(tabs, 'REQUESTS', { RequestID: 'REQ-3', ProductID: 'PRD-0002', Qty: 2, RequestedBy: 'U1', EstValue: 2, Status: 'PENDING_APPROVAL', Actor: 'purchase@ahl.com', Source: 'APP' }));
+  const result = await writeDirect('purchase.approveMany', 'purchase@ahl.com', { requestIds: ['REQ-2', 'REQ-3'], decision: 'APPROVE', operationId: opId() });
+  assert.equal(result.results.length, 2);
+  const h = tabs.REQUESTS.headers, statusIdx = h.indexOf('Status');
+  assert.equal(tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-2')[statusIdx], 'OPEN');
+  assert.equal(tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-3')[statusIdx], 'OPEN');
+})();
+await (async () => {
+  // One id in the batch isn't awaiting approval -- the whole batch is refused, nothing decided.
+  const { writeDirect, tabs } = fixture();
+  await assert.rejects(() => writeDirect('purchase.approveMany', 'purchase@ahl.com', { requestIds: ['REQ-2', 'REQ-1'], decision: 'APPROVE', operationId: opId() }), /VALIDATION/);
+  const h = tabs.REQUESTS.headers;
+  assert.equal(tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-2')[h.indexOf('Status')], 'PENDING_APPROVAL'); // untouched
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), and the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing).');

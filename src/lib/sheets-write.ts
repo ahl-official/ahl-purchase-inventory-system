@@ -25,7 +25,7 @@
  */
 import { createSign, randomUUID } from "node:crypto";
 import {
-  requireEnv, loadContext, isTruthy, appRole, getUser, getProduct, getConfig,
+  requireEnv, loadContext, isTruthy, appRole, getUser, getProduct, getConfig, getConfigNumber,
   findRecord, listPurchaseOrders, serialToDate, serialToIso,
   computeBalanceFromRows, computePendingHandoverOutFromRows,
   type Ctx, type Row,
@@ -560,9 +560,142 @@ async function handleReceiptChange(token: string, actor: string, ctx: Ctx, data:
   return { deleted: deleting, receiptId, txnIds: replacements.map((r) => r.TxnID) };
 }
 
+/** Ported 1:1 from Ledger.gs processPurchaseRequest / processPurchaseRequestLines. */
+async function handlePurchaseRequest(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>): Promise<unknown> {
+  if (data.lines) return handlePurchaseRequestLines(token, actor, ctx, data);
+  const newProductName = String(data.newProductName || "").trim();
+  const requestSource = String(data.source || "APP").trim().toUpperCase();
+  if (!["APP", "WHATSAPP", "CALL"].includes(requestSource)) throw new Error("VALIDATION: Request source must be App, WhatsApp or Call.");
+  if (!String(data.requestedByUserId || "").trim()) throw new Error("VALIDATION: Record who requested the product.");
+  if (String(data.notes || "").trim().length < 3) throw new Error("VALIDATION: Add a short reason for the request.");
+  const qty = Number(data.qty) || 0;
+  if (qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
+  let product: Row | null = null;
+  if (data.productId) {
+    product = getProduct(ctx, data.productId);
+    if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
+  } else if (!newProductName) {
+    throw new Error("VALIDATION: No product selected.");
+  }
+  const estValue = Number(data.estimatedValue) || (product ? qty * (Number(product.Cost) || 0) : 0);
+  const threshold = getConfigNumber(ctx, "ApprovalThreshold", 5000);
+  const terminalStatus = product ? "OPEN" : "NEW_PRODUCT";
+  const requesterRole = appRole((getUser(ctx, actor) || {}).Role);
+  let status: string, approvedBy: string;
+  if (requesterRole === "ProductDistributor") {
+    status = "PENDING_APPROVAL"; approvedBy = "";
+  } else {
+    const needsApproval = estValue >= threshold;
+    approvedBy = String(data.approvedBy || "").trim();
+    if (needsApproval && !approvedBy) throw new Error(`VALIDATION: This is over the ₹${threshold} threshold — record who approved it before logging.`);
+    status = terminalStatus;
+  }
+  const requestId = nextId("PR");
+  const now = new Date();
+  await appendRow(token, "REQUESTS", {
+    RequestID: requestId, Date: dateToSerial(now), ProductID: data.productId || "", NewProductName: newProductName,
+    Qty: qty, RequestedBy: data.requestedByUserId || "", Urgency: data.urgency || "Normal", EstValue: estValue,
+    Status: status, ApprovedBy: approvedBy, ApprovedAt: approvedBy ? dateToSerial(now) : "", Actor: actor,
+    Notes: data.notes || "", Source: requestSource,
+  });
+  await auditWrite(token, actor, "purchase.request", requestId, { productId: data.productId || "", newProductName, qty, estValue, approvedBy, status, source: requestSource });
+  return { requestId, status, estValue, threshold, approvedBy };
+}
+
+/** Several catalogue products, one reason. Does not change stock. Ported 1:1 from Ledger.gs processPurchaseRequestLines. */
+async function handlePurchaseRequestLines(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  if (String(data.newProductName || "").trim()) throw new Error("VALIDATION: A product that is not in the list yet is its own request.");
+  const lines = data.lines as Array<Record<string, unknown>> | undefined;
+  if (!lines || !lines.length) throw new Error("VALIDATION: Add at least one product.");
+  if (!String(data.requestedByUserId || "").trim()) throw new Error("VALIDATION: Record who requested the product.");
+  if (String(data.notes || "").trim().length < 3) throw new Error("VALIDATION: Add a short reason for the request.");
+  const requestSource = String(data.source || "APP").trim().toUpperCase();
+  if (!["APP", "WHATSAPP", "CALL"].includes(requestSource)) throw new Error("VALIDATION: Request source must be App, WhatsApp or Call.");
+
+  const seen: Record<string, boolean> = {};
+  const prepared = lines.map((line) => {
+    if (!line.productId) throw new Error("VALIDATION: No product selected.");
+    if (seen[String(line.productId)]) throw new Error("VALIDATION: That product is already on this request. Increase its quantity.");
+    seen[String(line.productId)] = true;
+    const product = getProduct(ctx, line.productId);
+    if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+    const qty = positiveQuantity(line.qty, product, false);
+    const est = qty * (Number(product.Cost) || 0);
+    return { productId: line.productId, qty, est };
+  });
+  const totalEst = Number(data.estimatedValue) || prepared.reduce((sum, line) => sum + line.est, 0);
+  const threshold = getConfigNumber(ctx, "ApprovalThreshold", 5000);
+  const requesterRole = appRole((getUser(ctx, actor) || {}).Role);
+  let approvedBy = "";
+  let status: string;
+  if (requesterRole === "ProductDistributor") {
+    status = "PENDING_APPROVAL";
+  } else {
+    approvedBy = String(data.approvedBy || "").trim();
+    if (totalEst >= threshold && !approvedBy) throw new Error(`VALIDATION: This is over the ₹${threshold} threshold — record who approved it before logging.`);
+    status = "OPEN";
+  }
+  const now = new Date();
+  const ids: string[] = [];
+  for (const line of prepared) {
+    const requestId = nextId("PR");
+    await appendRow(token, "REQUESTS", {
+      RequestID: requestId, Date: dateToSerial(now), ProductID: line.productId, NewProductName: "",
+      Qty: line.qty, RequestedBy: data.requestedByUserId || "", Urgency: data.urgency || "Normal",
+      EstValue: line.est, Status: status, ApprovedBy: approvedBy, ApprovedAt: approvedBy ? dateToSerial(now) : "",
+      Actor: actor, Notes: data.notes || "", Source: requestSource,
+    });
+    ids.push(requestId);
+  }
+  await auditWrite(token, actor, "purchase.request", ids[0], { count: ids.length, estValue: totalEst, status });
+  return { requestIds: ids, status, estValue: totalEst, threshold, approvedBy };
+}
+
+/** Ported 1:1 from Ledger.gs processDecidePurchaseRequest. */
+async function handleDecidePurchaseRequest(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const requestId = String(data.requestId || "").trim();
+  const decision = String(data.decision || "").trim().toUpperCase();
+  if (!requestId) throw new Error("VALIDATION: No request selected.");
+  if (decision !== "APPROVE" && decision !== "REJECT") throw new Error("VALIDATION: Decision must be Approve or Reject.");
+  const current = findRecord(ctx.requests, "RequestID", requestId);
+  if (!current) throw new Error(`NOT_FOUND: No request ${requestId}.`);
+  if (String(current.Status).trim() !== "PENDING_APPROVAL") throw new Error(`VALIDATION: ${requestId} is ${current.Status}, not awaiting approval.`);
+  const newStatus = decision === "APPROVE" ? (current.ProductID ? "OPEN" : "NEW_PRODUCT") : "REJECTED";
+  const changes: Record<string, unknown> = { Status: newStatus, ApprovedBy: actor, ApprovedAt: dateToSerial(new Date()) };
+  if (data.notes) {
+    const prefix = current.Notes ? `${current.Notes} | ` : "";
+    changes.Notes = `${prefix}Satvik: ${data.notes}`;
+  }
+  const checkPending = (fresh: Row) => {
+    if (String(fresh.Status).trim() !== "PENDING_APPROVAL") throw new Error(`VALIDATION: ${requestId} is ${fresh.Status}, not awaiting approval.`);
+  };
+  await updateRow(token, "REQUESTS", "RequestID", requestId, changes, checkPending);
+  await auditWrite(token, actor, `purchase.request.${decision.toLowerCase()}`, requestId, { decision, notes: data.notes || "" });
+  return { requestId, status: newStatus };
+}
+
+/** Several requests at once. Ported 1:1 from Ledger.gs processDecidePurchaseRequestMany. */
+async function handleDecidePurchaseRequestMany(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const ids = data.requestIds as string[] | undefined;
+  if (!ids || !ids.length) throw new Error("VALIDATION: Select at least one request.");
+  const decision = String(data.decision || "").trim().toUpperCase();
+  if (decision !== "APPROVE" && decision !== "REJECT") throw new Error("VALIDATION: Decision must be Approve or Reject.");
+  for (const requestId of ids) {
+    const r = findRecord(ctx.requests, "RequestID", requestId);
+    if (!r) throw new Error(`NOT_FOUND: No request ${requestId}.`);
+    if (String(r.Status).trim() !== "PENDING_APPROVAL") throw new Error(`VALIDATION: ${requestId} is ${r.Status}, not awaiting approval -- someone may have just decided it. Refresh and try again.`);
+  }
+  const results = [];
+  for (const requestId of ids) {
+    results.push(await handleDecidePurchaseRequest(token, actor, ctx, { requestId, decision, notes: data.notes }));
+  }
+  await auditWrite(token, actor, `purchase.request.${decision.toLowerCase()}Many`, ids.join(","), { count: ids.length });
+  return { results };
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -578,6 +711,9 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "order.delete": ["PurchaseCoordinator", "Admin"],
   "receipt.edit": ["PurchaseCoordinator", "Admin"],
   "receipt.delete": ["PurchaseCoordinator", "Admin"],
+  "purchase.request": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "purchase.approve": ["PurchaseCoordinator", "Admin"],
+  "purchase.approveMany": ["PurchaseCoordinator", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -609,6 +745,9 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "order.delete": result = await handleOrderDelete(token, actor, ctx, data); break;
       case "receipt.edit": result = await handleReceiptChange(token, actor, ctx, data, false); break;
       case "receipt.delete": result = await handleReceiptChange(token, actor, ctx, data, true); break;
+      case "purchase.request": result = await handlePurchaseRequest(token, actor, ctx, data); break;
+      case "purchase.approve": result = await handleDecidePurchaseRequest(token, actor, ctx, data); break;
+      case "purchase.approveMany": result = await handleDecidePurchaseRequestMany(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;
