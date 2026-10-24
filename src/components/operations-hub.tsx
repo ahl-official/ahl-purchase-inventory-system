@@ -1,14 +1,14 @@
 "use client";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useSession } from 'next-auth/react';
-import { ArrowDownToLine, ArrowRightLeft, Boxes, ClipboardList, Download, FileSpreadsheet, Loader2, PackagePlus, Plus, QrCode, RefreshCw, ScanLine, Search, Send, ShoppingBag } from 'lucide-react';
+import { ArrowDownToLine, ArrowRightLeft, Boxes, ClipboardList, Download, FileSpreadsheet, Loader2, Plus, QrCode, RefreshCw, ScanLine, Search, Send, ShoppingBag } from 'lucide-react';
 import { AppShell, PageContainer } from './app-shell';
 import { Button } from './ui/button';
 import { Select, TextInput, Panel, StatusBanner } from './ui/field';
 import { PhotoCapture, type CapturedPhoto } from './photo-capture';
 import { ProductPicker } from './product-picker';
 import { QrScanner } from './qr-scanner';
-import { NewProductForm, PURCHASE_UNITS, STOCK_UNITS } from './new-product-form';
+import { PURCHASE_UNITS, STOCK_UNITS } from './new-product-form';
 import { QrLabels } from './qr-labels';
 import { MonthlyReport } from './monthly-report';
 import { OrderReceiving, focusNextOnEnter } from './order-receiving';
@@ -28,7 +28,7 @@ interface Handover { handoverId:string; productId:string; productName:string; qt
 interface Order { orderId:string; date:string; productId:string; productName:string; vendorId:string; qty:number; received:number; remaining:number; uom:string; status:string; deliveryLocationId:string; notes?:string; unitPrice?:number|null; batchId?:string; }
 type History = MovementHistory;
 interface Data { myLocationId?:string; myUserId?:string; catalogue:Catalogue; dashboard:{stock:Stock[];openRequests:RequestRow[];pendingHandovers:Handover[]};orders:Order[];history:History[]; }
-type Tab='product'|'labels'|'report'|'stock'|'requests'|'deliveries'|'handovers'|'issue'|'retail'|'history';
+type Tab='labels'|'report'|'stock'|'requests'|'deliveries'|'handovers'|'issue'|'retail'|'history';
 type Kind='request'|'order'|'receive'|'handover'|'issue'|'retail'|'correction';
 interface FormSpec { kind:Kind; productId?:string; orderId?:string; requestId?:string; requestedQty?:number; requestedUom?:string; presetLines?:{productId:string;qty:string;requestId?:string}[]; }
 /** Requests from the same multi-product submission share requester, reason and a near-identical
@@ -36,7 +36,7 @@ interface FormSpec { kind:Kind; productId?:string; orderId?:string; requestId?:s
     so Satvik sees Hitesh's "5 products" as one card instead of 5 separate ones. */
 function requestBatchKey(r:RequestRow){return `${r.requestedBy}|${r.notes}|${Math.floor(new Date(r.date).getTime()/300000)}`;}
 function groupRequests(rows:RequestRow[]):RequestRow[][]{const map=new Map<string,RequestRow[]>();rows.forEach(r=>{const k=requestBatchKey(r);map.set(k,[...(map.get(k)||[]),r]);});return [...map.values()];}
-const TABS=[{id:'product',label:'New product',icon:PackagePlus},{id:'stock',label:'My stock',icon:Boxes},{id:'requests',label:'Requests',icon:ClipboardList},{id:'deliveries',label:'Purchases',icon:ArrowDownToLine},{id:'handovers',label:'Handovers',icon:ArrowRightLeft},{id:'issue',label:'Issue stock',icon:Send},{id:'retail',label:'Retail sale',icon:ShoppingBag},{id:'history',label:'History',icon:ClipboardList},{id:'labels',label:'QR labels',icon:QrCode},{id:'report',label:'Monthly report',icon:FileSpreadsheet}] as const;
+const TABS=[{id:'stock',label:'My stock',icon:Boxes},{id:'requests',label:'Requests',icon:ClipboardList},{id:'deliveries',label:'Purchases',icon:ArrowDownToLine},{id:'handovers',label:'Handovers',icon:ArrowRightLeft},{id:'issue',label:'Issue stock',icon:Send},{id:'retail',label:'Retail sale',icon:ShoppingBag},{id:'history',label:'History',icon:ClipboardList},{id:'labels',label:'QR labels',icon:QrCode},{id:'report',label:'Monthly report',icon:FileSpreadsheet}] as const;
 const LABEL:Record<Kind,string>={request:'Request stock',order:'Create purchase order',receive:'Record delivery',handover:'Send to a studio',issue:'Issue to technician',retail:'Record retail sale',correction:'Record correction'};
 function Status({value}:{value:string}){return <span className={cn('inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold tracking-wide',/PENDING|WAITING|PARTIAL|OPEN|ORDERED/.test(value)?'bg-amber-50 text-amber-800':/REJECT|VOID|CANCEL/.test(value)?'bg-red-50 text-red-700':'bg-teal-50 text-teal-800')}>{value.replaceAll('_',' ')}</span>;}
 const money=(amount:number)=>new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'}).format(amount);
@@ -125,7 +125,6 @@ export function OperationsHub({office}:{office:boolean}) {
     <div className="mb-6 grid grid-cols-3 gap-2 sm:gap-3">{[['Products available',data?data.dashboard.stock.filter(s=>(office?s.headOfficeAvailable:s.salonFloorBalance)>0).length:'—'],['Waiting for receipt',data?pending.length:'—'],['Open requests',data?data.dashboard.openRequests.length:'—']].map(([label,value])=><div key={label} className="rounded-2xl border border-border bg-card p-4 sm:p-5"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-semibold tabular">{value}</p></div>)}</div>
     <div className="grid items-start gap-5 lg:grid-cols-[190px_1fr]"><nav aria-label="Inventory tasks" className="-mx-4 flex gap-1.5 overflow-x-auto border-y border-border bg-card p-2 sm:mx-0 sm:rounded-2xl sm:border lg:sticky lg:top-20 lg:grid lg:grid-cols-1 lg:overflow-visible">{TABS.filter(t=>office||!['deliveries','report'].includes(t.id)).filter(t=>!office||t.id!=='retail').filter(t=>!data||!dispatchOnly||!['requests','issue','retail'].includes(t.id)).map(t=><button key={t.id} onClick={()=>{setTab(t.id);setForm(null);setNotice('');}} aria-current={tab===t.id?'page':undefined} className={cn('flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-colors',tab===t.id?'bg-brand text-white':'text-muted-foreground hover:bg-muted')}><t.icon className="size-4 shrink-0"/>{t.id==='handovers'&&dispatchOnly?'Dispatch':t.label}</button>)}</nav>
     <div className="min-w-0 space-y-4">{form&&data?<StockForm key={JSON.stringify(form)} form={form} data={data} office={office} admin={admin} busy={busy||loading||!online} onSubmit={perform} onClose={()=>setForm(null)}/>:<>
-      {tab==='product'&&<NewProductForm catalogue={c} onCreated={()=>void load()} onPrintLabel={id=>{setPreset({id,n:1});setTab('labels');}}/>}
       {tab==='labels'&&<QrLabels key={preset?.id} products={c.products} preset={preset}/>}
       {tab==='report'&&office&&<MonthlyReport/>}
       {tab==='deliveries'&&data&&<OrderReceiving orders={data.orders} catalogue={c} busy={busy||loading||!online} onSubmit={perform}/>}
