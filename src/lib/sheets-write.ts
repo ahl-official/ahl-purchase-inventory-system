@@ -26,7 +26,7 @@
 import { createSign, randomUUID } from "node:crypto";
 import {
   requireEnv, loadContext, isTruthy, appRole, getUser, getProduct, getConfig, getConfigNumber,
-  findRecord, listPurchaseOrders, serialToDate, serialToIso,
+  findRecord, listPurchaseOrders, serialToDate, serialToIso, openingLocationForActor,
   computeBalanceFromRows, computePendingHandoverOutFromRows,
   type Ctx, type Row,
 } from "./sheets-direct";
@@ -693,9 +693,67 @@ async function handleDecidePurchaseRequestMany(token: string, actor: string, ctx
   return { results };
 }
 
+/** Records one physical opening count. Approval is deliberately separate. Ported 1:1 from Ledger.gs processOpeningStockSubmit. */
+async function handleOpeningStockSubmit(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const product = getProduct(ctx, data.productId);
+  if (!product) throw new Error("UNKNOWN_PRODUCT: Select a valid product.");
+  const qty = positiveQuantity(data.qty, product, true);
+  if (isNaN(qty) || qty < 0) throw new Error("VALIDATION: Opening quantity cannot be negative.");
+  const locationId = openingLocationForActor(ctx, actor, data.locationId);
+  if (ctx.ledger.some((r) => r.ProductID === data.productId && r.LocationID === locationId && r.Status !== "VOID")) {
+    throw new Error("VALIDATION: Stock movement already exists. Use a recorded count correction.");
+  }
+  const existing = ctx.openingCounts.filter((row) => String(row.ProductID) === String(data.productId) && String(row.LocationID) === locationId && ["PENDING", "APPROVED"].includes(String(row.Status).toUpperCase()));
+  if (existing.length) throw new Error("DUPLICATE: Opening stock for this product and location is already submitted.");
+  const countId = nextId("OPN");
+  await appendRow(token, "OPENING_COUNTS", {
+    CountID: countId, Date: dateToSerial(new Date()), ProductID: data.productId, Qty: qty, LocationID: locationId,
+    CountedBy: actor, Status: "PENDING", Notes: data.notes || "", QtyOrdered: data.qtyOrdered || "",
+    QtyReceived: data.qtyReceived == null ? qty : Number(data.qtyReceived), CountUOM: data.countUom || product.IssueUOM || "",
+  });
+  await auditWrite(token, actor, "opening.submit", countId, { productId: data.productId, qty, locationId });
+  return { countId, status: "PENDING", locationId };
+}
+
+/**
+ * Admin approval posts exactly one OPENING row into the ledger. Ported from Ledger.gs
+ * processOpeningStockApprove, with one ordering change like receipt.edit/delete: the LEDGER
+ * append happens BEFORE the OPENING_COUNTS row is marked APPROVED, so a mid-sequence failure
+ * leaves the count still PENDING (safely re-approvable -- the alreadyPosted check below is
+ * exactly what makes a retry not double-post) rather than APPROVED with no ledger entry.
+ */
+async function handleOpeningStockApprove(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  if (appRole((getUser(ctx, actor) || {}).Role) !== "Admin") throw new Error("FORBIDDEN: Only an administrator can approve opening stock.");
+  const decision = String(data.decision || "").toUpperCase();
+  if (decision !== "APPROVE" && decision !== "REJECT") throw new Error("VALIDATION: Decision must be APPROVE or REJECT.");
+  const countId = String(data.countId || "");
+  const row = findRecord(ctx.openingCounts, "CountID", countId);
+  if (!row) throw new Error("NOT_FOUND: Opening count not found.");
+  if (String(row.Status).toUpperCase() !== "PENDING") throw new Error("VALIDATION: This opening count has already been decided.");
+
+  const status = decision === "APPROVE" ? "APPROVED" : "REJECTED";
+  if (decision === "APPROVE") {
+    const product = getProduct(ctx, row.ProductID);
+    const alreadyPosted = ctx.ledger.some((l) => String(l.Type).toUpperCase() === "OPENING" && String(l.HandoverID) === countId);
+    if (!alreadyPosted) {
+      await appendRow(token, "LEDGER", {
+        TxnID: nextId("TXN"), Date: dateToSerial(new Date()), Type: "OPENING", Direction: 1, ProductID: row.ProductID,
+        Qty: Number(row.Qty) || 0, UOM: product ? product.IssueUOM : "", QtyBase: Number(row.Qty) || 0,
+        LocationID: row.LocationID, HandoverID: countId, Actor: actor, Status: "POSTED", Notes: `Opening count ${countId}`,
+      });
+    }
+  }
+  const checkPending = (fresh: Row) => {
+    if (String(fresh.Status).toUpperCase() !== "PENDING") throw new Error("VALIDATION: This opening count has already been decided.");
+  };
+  await updateRow(token, "OPENING_COUNTS", "CountID", countId, { Status: status, ReviewedBy: actor, ReviewedAt: dateToSerial(new Date()) }, checkPending);
+  await auditWrite(token, actor, `opening.${decision.toLowerCase()}`, countId, { status });
+  return { countId, status };
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -714,6 +772,8 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "purchase.request": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "purchase.approve": ["PurchaseCoordinator", "Admin"],
   "purchase.approveMany": ["PurchaseCoordinator", "Admin"],
+  "opening.submit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "opening.approve": ["Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -748,6 +808,8 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "purchase.request": result = await handlePurchaseRequest(token, actor, ctx, data); break;
       case "purchase.approve": result = await handleDecidePurchaseRequest(token, actor, ctx, data); break;
       case "purchase.approveMany": result = await handleDecidePurchaseRequestMany(token, actor, ctx, data); break;
+      case "opening.submit": result = await handleOpeningStockSubmit(token, actor, ctx, data); break;
+      case "opening.approve": result = await handleOpeningStockApprove(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;

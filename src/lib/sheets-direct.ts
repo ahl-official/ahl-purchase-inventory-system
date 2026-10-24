@@ -143,10 +143,11 @@ export function actorLocation(ctx: Ctx, actor: string): string {
   const known = ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === loc && isTruthy(v.Active) && v.Extra);
   return known && loc !== ho ? loc : getConfig(ctx, "SalonFloorLocationID", "LOC-02");
 }
-export function openingLocationForActor(ctx: Ctx, actor: string): string {
+export function openingLocationForActor(ctx: Ctx, actor: string, requestedLocationId?: unknown): string {
   const role = appRole((getUser(ctx, actor) || {}).Role);
   if (role === "PurchaseCoordinator") return getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
   if (role === "ProductDistributor") return actorLocation(ctx, actor);
+  if (role === "Admin" && requestedLocationId) return String(requestedLocationId);
   throw new Error("FORBIDDEN: Your account cannot submit an opening stock count.");
 }
 

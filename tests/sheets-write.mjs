@@ -91,7 +91,7 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
     PEOPLE: { headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'], rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active]] },
     LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true]] },
     LEDGER: {
-      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID'],
+      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID', 'HandoverID'],
       rows: [],
     },
     PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
@@ -102,7 +102,10 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
         ['REQ-2', 0, 'PRD-0001', '', 3, 'U1', 'Normal', 6, 'PENDING_APPROVAL', '', '', 'purchase@ahl.com', '', 'APP'],
       ],
     },
-    OPENING_COUNTS: { headers: ['CountID'], rows: [] },
+    OPENING_COUNTS: {
+      headers: ['CountID', 'Date', 'ProductID', 'Qty', 'LocationID', 'CountedBy', 'Status', 'Notes', 'QtyOrdered', 'QtyReceived', 'CountUOM', 'ReviewedBy', 'ReviewedAt'],
+      rows: [],
+    },
     OPERATIONS: { headers: ['OperationID', 'Date', 'Actor', 'Action', 'Status', 'Result'], rows: [] },
     AUDIT: { headers: ['AuditID', 'Timestamp', 'Actor', 'Action', 'Ref', 'Detail', 'Result'], rows: [] },
   };
@@ -548,4 +551,62 @@ await (async () => {
   assert.equal(tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-2')[h.indexOf('Status')], 'PENDING_APPROVAL'); // untouched
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), and the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing).');
+// ---- opening.submit ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('opening.submit', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 25, operationId: opId() });
+  assert.match(result.countId, /^OPN-/);
+  assert.equal(result.status, 'PENDING');
+  assert.equal(result.locationId, 'LOC-01'); // PurchaseCoordinator always submits for Head Office
+  assert.equal(tabs.OPENING_COUNTS.rows.length, 1);
+})();
+await (async () => {
+  // A second submission for the same product + location while one is still pending is refused.
+  const { writeDirect, tabs } = fixture();
+  await writeDirect('opening.submit', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 25, operationId: opId() });
+  await assert.rejects(() => writeDirect('opening.submit', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 30, operationId: opId() }), /DUPLICATE/);
+  assert.equal(tabs.OPENING_COUNTS.rows.length, 1);
+})();
+await (async () => {
+  // A product that already has a real stock movement at this location needs a count correction, not an opening count.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'T1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 1, QtyBase: 500, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('opening.submit', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 25, operationId: opId() }), /VALIDATION/);
+  assert.equal(tabs.OPENING_COUNTS.rows.length, 0);
+})();
+await (async () => {
+  const { writeDirect } = fixture({ role: 'Technician' });
+  await assert.rejects(() => writeDirect('opening.submit', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 25, operationId: opId() }), /FORBIDDEN/);
+})();
+
+// ---- opening.approve ----
+await (async () => {
+  const { writeDirect, tabs } = fixture({ role: 'Admin' });
+  tabs.OPENING_COUNTS.rows.push(rowFor(tabs, 'OPENING_COUNTS', { CountID: 'OPN-1', ProductID: 'PRD-0001', Qty: 25, LocationID: 'LOC-01', CountedBy: 'purchase@ahl.com', Status: 'PENDING' }));
+  const result = await writeDirect('opening.approve', 'purchase@ahl.com', { countId: 'OPN-1', decision: 'APPROVE', operationId: opId() });
+  assert.equal(result.status, 'APPROVED');
+  assert.equal(tabs.LEDGER.rows.length, 1);
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows[0];
+  assert.equal(row[h.indexOf('Type')], 'OPENING');
+  assert.equal(row[h.indexOf('Qty')], 25);
+  assert.equal(row[h.indexOf('HandoverID')], 'OPN-1');
+  // Re-deciding an already-approved count is refused, and does not post a second ledger row.
+  await assert.rejects(() => writeDirect('opening.approve', 'purchase@ahl.com', { countId: 'OPN-1', decision: 'APPROVE', operationId: opId() }), /VALIDATION/);
+  assert.equal(tabs.LEDGER.rows.length, 1);
+})();
+await (async () => {
+  // Rejecting posts nothing to the ledger.
+  const { writeDirect, tabs } = fixture({ role: 'Admin' });
+  tabs.OPENING_COUNTS.rows.push(rowFor(tabs, 'OPENING_COUNTS', { CountID: 'OPN-2', ProductID: 'PRD-0001', Qty: 10, LocationID: 'LOC-01', CountedBy: 'purchase@ahl.com', Status: 'PENDING' }));
+  const result = await writeDirect('opening.approve', 'purchase@ahl.com', { countId: 'OPN-2', decision: 'REJECT', operationId: opId() });
+  assert.equal(result.status, 'REJECTED');
+  assert.equal(tabs.LEDGER.rows.length, 0);
+})();
+await (async () => {
+  // Only an administrator may decide -- gated both by role and inside the handler itself (matches Ledger.gs's double check).
+  const { writeDirect, tabs } = fixture({ role: 'PurchaseCoordinator' });
+  tabs.OPENING_COUNTS.rows.push(rowFor(tabs, 'OPENING_COUNTS', { CountID: 'OPN-3', ProductID: 'PRD-0001', Qty: 10, LocationID: 'LOC-01', CountedBy: 'purchase@ahl.com', Status: 'PENDING' }));
+  await assert.rejects(() => writeDirect('opening.approve', 'purchase@ahl.com', { countId: 'OPN-3', decision: 'APPROVE', operationId: opId() }), /FORBIDDEN/);
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), and the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard).');
