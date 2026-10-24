@@ -26,9 +26,11 @@
 import { createSign, randomUUID } from "node:crypto";
 import {
   requireEnv, loadContext, isTruthy, appRole, getUser, getProduct, getConfig,
-  findRecord, listPurchaseOrders, serialToDate,
+  findRecord, listPurchaseOrders, serialToDate, serialToIso,
+  computeBalanceFromRows, computePendingHandoverOutFromRows,
   type Ctx, type Row,
 } from "./sheets-direct";
+import { historyKey, type MovementHistory } from "./movement-history";
 
 // ---------------------------------------------------------------- auth (write scope, own cache)
 
@@ -456,9 +458,111 @@ async function handleOrderDelete(token: string, actor: string, ctx: Ctx, data: R
   return handleOrderCancel(token, actor, ctx, { orderId: data.orderId, notes: `Deleted: ${reason}` });
 }
 
+/** Row -> the shared MovementHistory shape, just enough for historyKey() to group an invoice. */
+function toHistoryRow(r: Row): MovementHistory {
+  return {
+    txnId: String(r.TxnID), date: serialToIso(r.Date), productId: String(r.ProductID), qty: Number(r.Qty), uom: String(r.UOM),
+    type: String(r.Type), locationId: String(r.LocationID), personId: String(r.PersonID || ""), status: String(r.Status),
+    notes: String(r.Notes || ""), vendorId: String(r.VendorID || ""), invoiceNo: String(r.InvoiceNo || ""), receiptId: String(r.ReceiptID || ""),
+    poRef: String(r.PORef || ""), billPhotoUrl: String(r.BillPhotoURL || ""),
+    amount: r.Amount === "" || r.Amount == null ? null : Number(r.Amount), gstAmount: r.GSTAmount === "" || r.GSTAmount == null ? null : Number(r.GSTAmount),
+  };
+}
+
+function availableBalance(ctx: Ctx, productId: unknown, locationId: unknown): number {
+  return computeBalanceFromRows(ctx.ledger, productId, String(locationId)) - computePendingHandoverOutFromRows(ctx.ledger, productId, String(locationId));
+}
+
+/**
+ * Ported from EntryChanges.gs processReceiptChange, with one deliberate ordering change:
+ * Apps Script voids the originals and appends the replacements in a single atomic range
+ * write (impossible here -- the Sheets API has no multi-row transaction). This version
+ * appends the replacements FIRST and voids the originals LAST, so a mid-sequence failure
+ * leaves temporarily-duplicated stock (safe to spot and void by hand) instead of silently
+ * missing stock. Each void re-verifies the row isn't already VOID immediately before
+ * writing, so a half-finished retry fails loudly (STALE_ENTRY) rather than double-voiding.
+ */
+async function handleReceiptChange(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>, deleting: boolean) {
+  const reason = entryChangeReason(data);
+  const txnIds = data.txnIds as string[] | undefined;
+  if (!Array.isArray(txnIds) || !txnIds.length || new Set(txnIds).size !== txnIds.length) throw new Error("VALIDATION: Select a receipt.");
+  const selected = ctx.ledger.filter((r) => txnIds.includes(String(r.TxnID)));
+  if (selected.length !== txnIds.length || selected.some((r) => r.Type !== "RECEIPT" || r.Status === "VOID" || Number(r.Direction) !== 1)) {
+    throw new Error("STALE_ENTRY: This receipt changed or was deleted. Refresh history.");
+  }
+  const groupKey = historyKey(toHistoryRow(selected[0]));
+  if (selected.some((r) => historyKey(toHistoryRow(r)) !== groupKey) || ctx.ledger.filter((r) => historyKey(toHistoryRow(r)) === groupKey).length !== selected.length) {
+    throw new Error("VALIDATION: Select the complete invoice. Refresh history.");
+  }
+  const date = deleting ? null : dateToSerial(resolveTxnDate(data));
+  const vendor = String(data.vendorId || "");
+  if (!deleting && !ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === vendor && isTruthy(v.Active))) throw new Error("VALIDATION: Select an active vendor.");
+  const lines = data.lines as Array<Record<string, unknown>> | undefined;
+  if (!deleting && (!Array.isArray(lines) || lines.length !== selected.length || new Set(lines.map((l) => l.txnId)).size !== selected.length)) {
+    throw new Error("VALIDATION: Include each original receipt line exactly once.");
+  }
+
+  const deltas: Record<string, { productId: unknown; locationId: unknown; qty: number }> = {};
+  const oldByOrder: Record<string, number> = {}, newByOrder: Record<string, number> = {};
+  const replacements: Record<string, unknown>[] = [];
+  const receiptId = nextId("RCPT");
+
+  for (const row of selected) {
+    const stockKey = JSON.stringify([row.ProductID, row.LocationID]);
+    if (!deltas[stockKey]) deltas[stockKey] = { productId: row.ProductID, locationId: row.LocationID, qty: 0 };
+    deltas[stockKey].qty -= Number(row.QtyBase);
+    if (row.PORef) oldByOrder[String(row.PORef)] = (oldByOrder[String(row.PORef)] || 0) + Number(row.Qty);
+    if (deleting) continue;
+    const line = lines!.find((l) => l.txnId === row.TxnID);
+    if (!line) throw new Error("VALIDATION: Original receipt line is missing.");
+    const qty = Number(line.qty);
+    const amount = line.amount === "" || line.amount == null ? "" : Number(line.amount);
+    const gst = line.gstAmount === "" || line.gstAmount == null ? "" : Number(line.gstAmount);
+    if (!isFinite(qty) || qty < 0 || (row.UOM === "PCS" && Math.floor(qty) !== qty)) throw new Error("VALIDATION: Enter a valid received quantity.");
+    if ((amount !== "" && (!isFinite(amount) || amount < 0)) || (gst !== "" && (!isFinite(gst) || gst < 0))) throw new Error("VALIDATION: Amount and GST must be zero or greater.");
+    if (qty === 0) continue;
+    if (!(Number(row.Qty) > 0) || !(Number(row.QtyBase) > 0)) throw new Error("VALIDATION: Historical units need administrator review.");
+    const qtyBase = (qty * Number(row.QtyBase)) / Number(row.Qty);
+    deltas[stockKey].qty += qtyBase;
+    if (row.PORef) newByOrder[String(row.PORef)] = (newByOrder[String(row.PORef)] || 0) + qty;
+    replacements.push({
+      ...row, TxnID: nextId("TXN"), ReceiptID: receiptId, Date: date, VendorID: vendor,
+      InvoiceNo: String(data.invoiceNo || "").trim(), Qty: qty, QtyBase: qtyBase, Amount: amount, GSTAmount: gst,
+      GSTPercent: amount !== "" && Number(amount) > 0 && gst !== "" ? (Number(gst) / Number(amount)) * 100 : "",
+      Actor: actor, Status: "RECEIVED", Notes: `${String(data.notes || "").trim()} | Edited from ${row.TxnID}: ${reason}`,
+    });
+  }
+  if (!deleting && !replacements.length) throw new Error("VALIDATION: Keep at least one received product, or use Delete receipt.");
+  for (const delta of Object.values(deltas)) {
+    if (availableBalance(ctx, delta.productId, delta.locationId) + delta.qty < -0.000001) {
+      throw new Error("INSUFFICIENT_STOCK: This stock has been issued or reserved. Return or correct those movements before reducing this receipt.");
+    }
+  }
+  if (!deleting) {
+    const orders = listPurchaseOrders(ctx);
+    for (const id of Object.keys(newByOrder)) {
+      const order = orders.find((o) => o.orderId === id);
+      if (!order || order.vendorId !== vendor) throw new Error("VALIDATION: The receipt vendor must match its purchase order.");
+      if (order.received - (oldByOrder[id] || 0) + newByOrder[id] > order.qty + 0.000001) throw new Error("VALIDATION: Received quantity exceeds the purchase order. Edit the order first.");
+    }
+  }
+
+  // Replacements first, voids last (see function doc) -- a mid-sequence failure over-counts stock, never under-counts it.
+  for (const replacement of replacements) await appendRow(token, "LEDGER", replacement);
+  for (const row of selected) {
+    const suffix = ` | ${deleting ? "Deleted" : "Replaced"} by ${actor}: ${reason}`;
+    await updateRow(token, "LEDGER", "TxnID", String(row.TxnID), { Status: "VOID", Notes: `${String(row.Notes || "")}${suffix}` }, (fresh) => {
+      if (String(fresh.Status) === "VOID") throw new Error("STALE_ENTRY: This receipt changed or was deleted. Refresh history.");
+    });
+  }
+
+  await auditWrite(token, actor, deleting ? "receipt.delete" : "receipt.edit", String(selected[0].TxnID), { originalTxnIds: txnIds, replacementTxnIds: replacements.map((r) => r.TxnID), reason });
+  return { deleted: deleting, receiptId, txnIds: replacements.map((r) => r.TxnID) };
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -472,6 +576,8 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "order.cancel": ["PurchaseCoordinator", "Admin"],
   "order.edit": ["PurchaseCoordinator", "Admin"],
   "order.delete": ["PurchaseCoordinator", "Admin"],
+  "receipt.edit": ["PurchaseCoordinator", "Admin"],
+  "receipt.delete": ["PurchaseCoordinator", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -501,6 +607,8 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "order.cancel": result = await handleOrderCancel(token, actor, ctx, data); break;
       case "order.edit": result = await handleOrderEdit(token, actor, ctx, data); break;
       case "order.delete": result = await handleOrderDelete(token, actor, ctx, data); break;
+      case "receipt.edit": result = await handleReceiptChange(token, actor, ctx, data, false); break;
+      case "receipt.delete": result = await handleReceiptChange(token, actor, ctx, data, true); break;
     }
     await completeOperation(token, operationId, result);
     return result;

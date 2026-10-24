@@ -21,6 +21,7 @@ function compile(relPath) {
 }
 const sheetsDirectCompiled = compile('../src/lib/sheets-direct.ts');
 const sheetsWriteCompiled = compile('../src/lib/sheets-write.ts');
+const movementHistoryCompiled = compile('../src/lib/movement-history.ts');
 
 const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const FAKE_PRIVATE_KEY = privateKey.export({ type: 'pkcs8', format: 'pem' });
@@ -89,7 +90,10 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
     },
     PEOPLE: { headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'], rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active]] },
     LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true]] },
-    LEDGER: { headers: ['Type', 'Status', 'PORef', 'Qty', 'QtyBase', 'ProductID', 'LocationID', 'Direction'], rows: [] },
+    LEDGER: {
+      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID'],
+      rows: [],
+    },
     PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
     REQUESTS: { headers: ['RequestID', 'ProductID', 'Status'], rows: [['REQ-1', 'PRD-0001', 'OPEN']] },
     OPENING_COUNTS: { headers: ['CountID'], rows: [] },
@@ -101,17 +105,42 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
   process.env.GOOGLE_SERVICE_ACCOUNT_KEY = Buffer.from(JSON.stringify({ client_email: 'test@test.iam.gserviceaccount.com', private_key: FAKE_PRIVATE_KEY })).toString('base64');
   process.env.GOOGLE_SHEET_ID = 'TEST_SHEET';
 
-  const baseRequire = (path) => (path === './movement-history' ? { recentHistory: () => [] } : require(path));
+  // The real movement-history.ts (pure functions, no external deps) -- both sheets-direct.ts
+  // (recentHistory) and sheets-write.ts (historyKey, for receipt.edit/delete's invoice grouping)
+  // need the actual logic here, not a stub, so it's compiled and shared like the other two.
+  const movementHistoryExports = loadModule(movementHistoryCompiled, require, mock.fetchImpl, 'movement-history.js');
+  const baseRequire = (path) => (path === './movement-history' ? movementHistoryExports : require(path));
   const sheetsDirectExports = loadModule(sheetsDirectCompiled, baseRequire, mock.fetchImpl, 'sheets-direct.js');
-  // sheets-write.ts does `require("./sheets-direct")` -- intercept that one specifier
-  // and hand back the already-loaded module compiled above, without touching disk.
-  const writeRequire = (path) => (path === './sheets-direct' ? sheetsDirectExports : require(path));
+  // sheets-write.ts does `require("./sheets-direct")` / `require("./movement-history")` --
+  // intercept those two specifiers and hand back the already-loaded modules, without touching disk.
+  const writeRequire = (path) => (path === './sheets-direct' ? sheetsDirectExports : path === './movement-history' ? movementHistoryExports : require(path));
   const sheetsWrite = loadModule(sheetsWriteCompiled, writeRequire, mock.fetchImpl, 'sheets-write.js');
 
   return { mock, tabs, writeDirect: sheetsWrite.writeDirect, sheetsDirect: sheetsDirectExports };
 }
 
 const opId = () => 'op-' + crypto.randomBytes(8).toString('hex');
+
+// Builds a tab row from a { Header: value } object instead of a positional array, so tests
+// don't have to keep counting column indices whenever a tab's header list changes.
+function rowFor(tabs, name, obj) {
+  return tabs[name].headers.map((h) => (h in obj ? obj[h] : ''));
+}
+
+const IST_OFFSET_MS = 330 * 60 * 1000;
+function dateToSerialTest(d) { return (d.getTime() + IST_OFFSET_MS) / 86400000 + 25569; }
+
+// Two purchase orders (PO-A / PO-B) each with one already-received RECEIPT line, both on the
+// same invoice (shared InvoiceNo + VendorID + date) so they group as one editable receipt --
+// mirrors the PO1/PO2 + R1/R2 fixture in tests/entry-changes.mjs for the Apps Script version.
+function seedReceiptPair(tabs) {
+  const dateSerial = dateToSerialTest(new Date('2026-10-20T06:30:00.000Z'));
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-A', Date: dateSerial, ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', Actor: 'purchase@ahl.com', DeliveryLocationID: 'LOC-01', BatchID: 'PO-A' }));
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-B', Date: dateSerial, ProductID: 'PRD-0002', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', Actor: 'purchase@ahl.com', DeliveryLocationID: 'LOC-01', BatchID: 'PO-B' }));
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'R1', Date: dateSerial, Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 5, UOM: 'BOTTLE', QtyBase: 2500, LocationID: 'LOC-01', VendorID: 'VND-1', PORef: 'PO-A', InvoiceNo: 'INV1', Amount: 500, GSTAmount: 90, ReceiptID: 'BATCH1', Actor: 'purchase@ahl.com', Status: 'RECEIVED', Notes: 'Original' }));
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'R2', Date: dateSerial, Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0002', Qty: 2, UOM: 'BOTTLE', QtyBase: 400, LocationID: 'LOC-01', VendorID: 'VND-1', PORef: 'PO-B', InvoiceNo: 'INV1', Amount: 20, GSTAmount: 0, ReceiptID: 'BATCH1', Actor: 'purchase@ahl.com', Status: 'RECEIVED', Notes: '' }));
+  return { dateSerial };
+}
 
 await (async () => {
   const { writeDirect, tabs, mock } = fixture();
@@ -346,7 +375,7 @@ await (async () => {
 // ---- order.delete ----
 await (async () => {
   // Delegates to order.cancel exactly like EntryChanges.gs -- same CANCELLED status, no separate audit entry.
-  const { writeDirect, tabs, mock } = fixture();
+  const { writeDirect, mock } = fixture();
   const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
   const result = await writeDirect('order.delete', 'purchase@ahl.com', { orderId: created.orderId, reason: 'Entered by mistake', operationId: opId() });
   assert.equal(result.status, 'CANCELLED');
@@ -357,8 +386,79 @@ await (async () => {
   // A partially received order cannot be deleted -- the receipts must be corrected first.
   const { writeDirect, tabs } = fixture();
   const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
-  tabs.LEDGER.rows.push(['RECEIPT', 'POSTED', created.orderId, 5, 5, 'PRD-0001', 'LOC-01', 1]);
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { Type: 'RECEIPT', Status: 'POSTED', PORef: created.orderId, Qty: 5, QtyBase: 5, ProductID: 'PRD-0001', LocationID: 'LOC-01', Direction: 1 }));
   await assert.rejects(() => writeDirect('order.delete', 'purchase@ahl.com', { orderId: created.orderId, reason: 'Entered by mistake', operationId: opId() }), /VALIDATION/);
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), and the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete).');
+// ---- receipt.edit ----
+await (async () => {
+  const { writeDirect, tabs, sheetsDirect } = fixture();
+  seedReceiptPair(tabs);
+  const result = await writeDirect('receipt.edit', 'purchase@ahl.com', {
+    txnIds: ['R1', 'R2'], reason: 'Correct delivery', date: '2026-10-20', vendorId: 'VND-1', invoiceNo: 'INV1',
+    lines: [{ txnId: 'R1', qty: 3, amount: 300, gstAmount: 54 }, { txnId: 'R2', qty: 2, amount: 0, gstAmount: 0 }], operationId: opId(),
+  });
+  assert.equal(result.deleted, false);
+  assert.equal(result.txnIds.length, 2);
+  assert.equal(tabs.LEDGER.rows.length, 4); // 2 originals (now VOID) + 2 replacements
+  const h = tabs.LEDGER.headers, statusIdx = h.indexOf('Status'), txnIdx = h.indexOf('TxnID'), poRefIdx = h.indexOf('PORef'), qtyBaseIdx = h.indexOf('QtyBase'), amountIdx = h.indexOf('Amount');
+  assert.equal(tabs.LEDGER.rows.find((r) => r[txnIdx] === 'R1')[statusIdx], 'VOID');
+  assert.equal(tabs.LEDGER.rows.find((r) => r[txnIdx] === 'R2')[statusIdx], 'VOID');
+  const replacementA = tabs.LEDGER.rows.find((r) => r[statusIdx] === 'RECEIVED' && r[poRefIdx] === 'PO-A');
+  assert.equal(replacementA[qtyBaseIdx], 1500); // 3 * 2500/5
+  assert.equal(replacementA[amountIdx], 300);
+  const ops = await sheetsDirect.readDirect('operations.read', 'purchase@ahl.com', {});
+  assert.equal(ops.orders.find((o) => o.orderId === 'PO-A').received, 3);
+  // Replaying against the now-voided original lines refuses instead of silently voiding twice.
+  await assert.rejects(() => writeDirect('receipt.edit', 'purchase@ahl.com', {
+    txnIds: ['R1', 'R2'], reason: 'Retry', date: '2026-10-20', vendorId: 'VND-1', invoiceNo: 'INV1',
+    lines: [{ txnId: 'R1', qty: 1, amount: 100 }, { txnId: 'R2', qty: 1, amount: 1 }], operationId: opId(),
+  }), /STALE_ENTRY/);
+})();
+await (async () => {
+  // Reducing a receipt below what's already been issued out is refused before anything is written.
+  const { writeDirect, tabs } = fixture();
+  seedReceiptPair(tabs);
+  const dateSerial = tabs.LEDGER.rows[0][tabs.LEDGER.headers.indexOf('Date')];
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'ISSUE1', Date: dateSerial, Type: 'ISSUE', Direction: -1, ProductID: 'PRD-0001', Qty: 2400, UOM: 'ML', QtyBase: 2400, LocationID: 'LOC-01', Status: 'ISSUED' }));
+  await assert.rejects(() => writeDirect('receipt.edit', 'purchase@ahl.com', {
+    txnIds: ['R1', 'R2'], reason: 'Reduce quantity', date: '2026-10-20', vendorId: 'VND-1', invoiceNo: 'INV1',
+    lines: [{ txnId: 'R1', qty: 0, amount: 0 }, { txnId: 'R2', qty: 2, amount: 20 }], operationId: opId(),
+  }), /INSUFFICIENT_STOCK/);
+  assert.equal(tabs.LEDGER.rows.length, 3); // nothing written on the rejected edit
+})();
+await (async () => {
+  // Selecting only one line of a two-line invoice is refused -- must edit the complete invoice.
+  const { writeDirect, tabs } = fixture();
+  seedReceiptPair(tabs);
+  await assert.rejects(() => writeDirect('receipt.edit', 'purchase@ahl.com', {
+    txnIds: ['R1'], reason: 'Partial edit', date: '2026-10-20', vendorId: 'VND-1', invoiceNo: 'INV1',
+    lines: [{ txnId: 'R1', qty: 1, amount: 1 }], operationId: opId(),
+  }), /VALIDATION/);
+})();
+await (async () => {
+  // Wrong role (same PurchaseCoordinator/Admin-only gate as the order actions).
+  const { writeDirect, tabs } = fixture({ role: 'ProductDistributor' });
+  seedReceiptPair(tabs);
+  await assert.rejects(() => writeDirect('receipt.edit', 'purchase@ahl.com', {
+    txnIds: ['R1', 'R2'], reason: 'x', date: '2026-10-20', vendorId: 'VND-1', invoiceNo: 'INV1',
+    lines: [{ txnId: 'R1', qty: 1, amount: 1 }, { txnId: 'R2', qty: 1, amount: 1 }], operationId: opId(),
+  }), /FORBIDDEN/);
+})();
+
+// ---- receipt.delete ----
+await (async () => {
+  const { writeDirect, tabs, sheetsDirect, mock } = fixture();
+  seedReceiptPair(tabs);
+  const result = await writeDirect('receipt.delete', 'purchase@ahl.com', { txnIds: ['R1', 'R2'], reason: 'Wrong invoice entirely', operationId: opId() });
+  assert.equal(result.deleted, true);
+  assert.equal(result.txnIds.length, 0); // nothing replaces a deleted receipt
+  const h = tabs.LEDGER.headers, statusIdx = h.indexOf('Status');
+  assert.equal(tabs.LEDGER.rows.every((r) => r[statusIdx] === 'VOID'), true);
+  assert.equal(tabs.LEDGER.rows.length, 2); // voided in place, nothing appended
+  const ops = await sheetsDirect.readDirect('operations.read', 'purchase@ahl.com', {});
+  assert.equal(ops.orders.find((o) => o.orderId === 'PO-A').received, 0);
+  assert.equal(mock.calls.append.some((c) => c.tab === 'AUDIT' && c.values[0].includes('receipt.delete')), true);
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), and the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards).');
