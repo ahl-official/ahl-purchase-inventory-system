@@ -26,7 +26,7 @@
 import { createSign, randomUUID } from "node:crypto";
 import {
   requireEnv, loadContext, isTruthy, appRole, getUser, getProduct, getConfig, getConfigNumber,
-  findRecord, listPurchaseOrders, serialToDate, serialToIso, openingLocationForActor,
+  findRecord, listPurchaseOrders, serialToDate, serialToIso, openingLocationForActor, actorLocation,
   computeBalanceFromRows, computePendingHandoverOutFromRows,
   type Ctx, type Row,
 } from "./sheets-direct";
@@ -751,9 +751,129 @@ async function handleOpeningStockApprove(token: string, actor: string, ctx: Ctx,
   return { countId, status };
 }
 
+const BUSINESS_UNITS = ["AHL", "Alchemane", "Shared", "Hair Patch at Home"];
+
+/** The business unit a category belongs to (LISTS.Extra); Shared when it has none. Ported 1:1 from Ledger.gs businessUnitOf. */
+function businessUnitOf(ctx: Ctx, categoryId: unknown): string {
+  const row = ctx.lists.find((v) => v.Type === "CATEGORY" && v.Code === categoryId);
+  return row && BUSINESS_UNITS.includes(String(row.Extra)) ? String(row.Extra) : "Shared";
+}
+
+/**
+ * Issues stock to one or more recipients. Ported 1:1 from Ledger.gs processStockIssue.
+ * One append per split -- each is independently race-safe (appends never collide), and the
+ * shared handoverId lets the splits be reconstructed as one event the same way the .gs version's
+ * single appendRecords call did.
+ */
+async function handleStockIssue(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const actorRole = appRole((getUser(ctx, actor) || {}).Role);
+  const expectedLocation = actorLocation(ctx, actor);
+  const locationId = String(data.fromLocationId || expectedLocation);
+  if (actorRole !== "Admin" && locationId !== expectedLocation) throw new Error("FORBIDDEN: You can issue only from your own stock location.");
+  if (!data.productId) throw new Error("VALIDATION: No product selected.");
+  const splits = data.splits as Array<Record<string, unknown>> | undefined;
+  if (!splits || !splits.length) throw new Error("VALIDATION: No allocation given.");
+  const product = getProduct(ctx, data.productId);
+  if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
+
+  const balance = availableBalance(ctx, data.productId, locationId);
+  let total = 0;
+  for (const s of splits) {
+    const splitQty = positiveQuantity(s.qty, product, false);
+    if (splitQty <= 0) throw new Error("VALIDATION: Every split needs a quantity above zero.");
+    if (!s.categoryId) throw new Error("VALIDATION: Every split needs a service category.");
+    if (s.businessUnit && !BUSINESS_UNITS.includes(String(s.businessUnit))) throw new Error("VALIDATION: Choose AHL, Alchemane, Shared or Hair Patch at Home.");
+    if (!s.recipientUserId) throw new Error("VALIDATION: Every split needs a technician.");
+    if (!ctx.people.some((r) => r.UserID === s.recipientUserId && isTruthy(r.Active))) throw new Error("VALIDATION: Select an active recipient.");
+    total += splitQty;
+  }
+  if (total <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
+  if (total > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand at ${locationId}, tried to issue ${total}.`);
+
+  const handoverId = nextId("HND");
+  const now = dateToSerial(resolveTxnDate(data));
+  for (const split of splits) {
+    const qty = Number(split.qty) || 0;
+    await appendRow(token, "LEDGER", {
+      TxnID: nextId("TXN"), Date: now, Type: "ISSUE", Direction: -1, ProductID: data.productId, Qty: qty,
+      UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, CategoryID: split.categoryId || "",
+      BusinessUnit: split.businessUnit || businessUnitOf(ctx, split.categoryId), PersonID: split.recipientUserId || "",
+      HandoverID: handoverId, Amount: qty * (Number(product.Cost) || 0), Actor: actor, Status: "ISSUED", Notes: split.notes || "",
+    });
+  }
+  await auditWrite(token, actor, "stock.issue", handoverId, { productId: data.productId, locationId, total, splits: splits.length });
+  return { handoverId, newBalance: balance - total, uom: product.IssueUOM };
+}
+
+/** Ported 1:1 from Ledger.gs processRetailSale. */
+async function handleRetailSale(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const actorRole = appRole((getUser(ctx, actor) || {}).Role);
+  const expectedLocation = actorLocation(ctx, actor);
+  const locationId = String(data.fromLocationId || expectedLocation);
+  if (actorRole !== "Admin" && locationId !== expectedLocation) throw new Error("FORBIDDEN: You can sell only from your own stock location.");
+  if (!data.productId) throw new Error("VALIDATION: No product selected.");
+  const product = getProduct(ctx, data.productId);
+  if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
+  if (!["Retail", "Both"].includes(String(product.ProductType))) throw new Error("VALIDATION: This product is not marked for retail sale.");
+
+  const qty = positiveQuantity(data.qty, product, false);
+  const qtyBase = qty * (Number(product.ConvFactor) || 1);
+  const clientName = String(data.clientName || "").trim();
+  const clientPhone = String(data.clientPhone || "").trim();
+  const techId = String(data.recipientUserId || "").trim();
+  if (!clientName) throw new Error("VALIDATION: Record who bought this.");
+  if (!techId || !ctx.people.some((r) => r.UserID === techId && isTruthy(r.Active))) throw new Error("VALIDATION: Select a technician.");
+
+  const balance = availableBalance(ctx, data.productId, locationId);
+  if (qtyBase > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand at ${locationId}, tried to sell ${qtyBase}.`);
+
+  const txnId = nextId("TXN");
+  const notesParts = [`Client: ${clientName}`];
+  if (clientPhone) notesParts.push(`Phone: ${clientPhone}`);
+  if (data.refNo) notesParts.push(`Ref: ${String(data.refNo).trim()}`);
+  if (data.notes) notesParts.push(String(data.notes).trim());
+  await appendRow(token, "LEDGER", {
+    TxnID: txnId, Date: dateToSerial(new Date()), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
+    UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase, LocationID: locationId, PersonID: techId,
+    Amount: qtyBase * (Number(product.Cost) || 0), Actor: actor, Status: "SOLD", Notes: notesParts.join(" | "),
+  });
+  await auditWrite(token, actor, "stock.retailSale", txnId, { productId: data.productId, qty, clientName });
+  return { txnId, newBalance: balance - qtyBase, uom: product.IssueUOM };
+}
+
+/** Ported 1:1 from Operations.gs processStockAdjustment. */
+async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const role = appRole((getUser(ctx, actor) || {}).Role);
+  const product = getProduct(ctx, data.productId);
+  if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+  const loc = openingLocationForActor(ctx, actor, data.locationId);
+  const qty = positiveQuantity(data.qty, product, false);
+  if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Record the reason.");
+  const kind = String(data.kind || "");
+  if (!["RETURN", "DAMAGE", "COUNT_IN", "COUNT_OUT"].includes(kind)) throw new Error("VALIDATION: Select a correction type.");
+  if (/^COUNT_/.test(kind) && role !== "Admin") throw new Error("FORBIDDEN: Only management can adjust a physical count.");
+  const direction = kind === "RETURN" || kind === "COUNT_IN" ? 1 : -1;
+  if (direction < 0 && qty > availableBalance(ctx, data.productId, loc)) throw new Error("INSUFFICIENT_STOCK: Correction exceeds available stock.");
+  if (kind === "RETURN") {
+    const source = findRecord(ctx.ledger, "TxnID", data.sourceTxnId);
+    if (!source || source.Type !== "ISSUE" || source.Status === "VOID" || source.ProductID !== data.productId || source.LocationID !== loc) {
+      throw new Error("VALIDATION: Select the original issue from this location.");
+    }
+    const returned = ctx.ledger.filter((l) => l.Type === "RETURN" && l.PORef === data.sourceTxnId && l.Status !== "VOID").reduce((s, l) => s + Number(l.QtyBase), 0);
+    if (returned + qty > Number(source.QtyBase)) throw new Error("VALIDATION: Return exceeds the quantity originally issued.");
+  }
+  const id = nextId("TXN");
+  await appendRow(token, "LEDGER", {
+    TxnID: id, Date: dateToSerial(resolveTxnDate(data)), Type: kind, Direction: direction, ProductID: data.productId,
+    Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc, PORef: data.sourceTxnId || "", Actor: actor, Status: "POSTED", Notes: data.notes,
+  });
+  await auditWrite(token, actor, "stock.adjust", id, data);
+  return { txnId: id };
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -774,6 +894,9 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "purchase.approveMany": ["PurchaseCoordinator", "Admin"],
   "opening.submit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.approve": ["Admin"],
+  "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "stock.adjust": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -810,6 +933,9 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "purchase.approveMany": result = await handleDecidePurchaseRequestMany(token, actor, ctx, data); break;
       case "opening.submit": result = await handleOpeningStockSubmit(token, actor, ctx, data); break;
       case "opening.approve": result = await handleOpeningStockApprove(token, actor, ctx, data); break;
+      case "stock.issue": result = await handleStockIssue(token, actor, ctx, data); break;
+      case "stock.retailSale": result = await handleRetailSale(token, actor, ctx, data); break;
+      case "stock.adjust": result = await handleStockAdjustment(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;

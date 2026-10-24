@@ -85,13 +85,16 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
       headers: ['ProductID', 'Name', 'CategoryID', 'IssueUOM', 'PurchaseUOM', 'ConvFactor', 'Cost', 'GSTPercent', 'VendorID', 'ReorderLevel', 'Active', 'Notes', 'ProductType'],
       rows: [
         ['PRD-0001', 'Shampoo', 'CAT-1', 'ML', 'BOTTLE', 500, 2, 0.18, 'VND-1', 5, true, '', 'Consumable'],
-        ['PRD-0002', 'Hair Oil', 'CAT-1', 'ML', 'BOTTLE', 200, 1, 0.18, 'VND-1', 2, true, '', 'Consumable'],
+        ['PRD-0002', 'Hair Oil', 'CAT-1', 'ML', 'BOTTLE', 200, 1, 0.18, 'VND-1', 2, true, '', 'Retail'],
       ],
     },
-    PEOPLE: { headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'], rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active]] },
+    PEOPLE: {
+      headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'],
+      rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active], ['U2', 'tech@ahl.com', 'Tech One', 'Technician', 'LOC-01', true]],
+    },
     LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true]] },
     LEDGER: {
-      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID', 'HandoverID'],
+      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit'],
       rows: [],
     },
     PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
@@ -609,4 +612,100 @@ await (async () => {
   await assert.rejects(() => writeDirect('opening.approve', 'purchase@ahl.com', { countId: 'OPN-3', decision: 'APPROVE', operationId: opId() }), /FORBIDDEN/);
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), and the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard).');
+// ---- stock.issue ----
+await (async () => {
+  const { writeDirect, tabs } = fixture(); // PurchaseCoordinator -> issues from Head Office (LOC-01)
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 1000, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.issue', 'purchase@ahl.com', {
+    productId: 'PRD-0001', splits: [{ qty: 2, categoryId: 'CAT-1', recipientUserId: 'U2' }], operationId: opId(),
+  });
+  assert.match(result.handoverId, /^HND-/);
+  assert.equal(result.newBalance, 998);
+  assert.equal(tabs.LEDGER.rows.length, 2);
+  const h = tabs.LEDGER.headers, issueRow = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'ISSUE');
+  assert.equal(issueRow[h.indexOf('Direction')], -1);
+  assert.equal(issueRow[h.indexOf('HandoverID')], result.handoverId);
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 1, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.issue', 'purchase@ahl.com', { productId: 'PRD-0001', splits: [{ qty: 5, categoryId: 'CAT-1', recipientUserId: 'U2' }], operationId: opId() }), /INSUFFICIENT_STOCK/);
+})();
+await (async () => {
+  // ProductDistributor's expected location (no matching LOCATION row in this fixture) is Salon Floor, not Head Office.
+  const { writeDirect } = fixture({ role: 'ProductDistributor' });
+  await assert.rejects(() => writeDirect('stock.issue', 'purchase@ahl.com', {
+    productId: 'PRD-0001', fromLocationId: 'LOC-01', splits: [{ qty: 1, categoryId: 'CAT-1', recipientUserId: 'U2' }], operationId: opId(),
+  }), /FORBIDDEN/);
+})();
+await (async () => {
+  // Admin can issue from any location, bypassing the own-location restriction.
+  const { writeDirect, tabs } = fixture({ role: 'Admin' });
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-03', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.issue', 'purchase@ahl.com', {
+    productId: 'PRD-0001', fromLocationId: 'LOC-03', splits: [{ qty: 1, categoryId: 'CAT-1', recipientUserId: 'U2' }], operationId: opId(),
+  });
+  assert.equal(result.newBalance, 9);
+})();
+
+// ---- stock.retailSale ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0002', QtyBase: 1000, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.retailSale', 'purchase@ahl.com', { productId: 'PRD-0002', qty: 2, clientName: 'Jane Doe', recipientUserId: 'U2', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  assert.equal(result.newBalance, 600); // 1000 - (2 * ConvFactor 200)
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'RETAIL_SALE');
+  assert.match(String(row[h.indexOf('Notes')]), /Client: Jane Doe/);
+})();
+await (async () => {
+  // PRD-0001 is Consumable, not Retail/Both.
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('stock.retailSale', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, clientName: 'Jane Doe', recipientUserId: 'U2', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('stock.retailSale', 'purchase@ahl.com', { productId: 'PRD-0002', qty: 1, recipientUserId: 'U2', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0002', QtyBase: 1, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.retailSale', 'purchase@ahl.com', { productId: 'PRD-0002', qty: 5, clientName: 'Jane Doe', recipientUserId: 'U2', operationId: opId() }), /INSUFFICIENT_STOCK/);
+})();
+
+// ---- stock.adjust ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 2, kind: 'DAMAGE', notes: 'Bottle cracked in storage', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'DAMAGE');
+  assert.equal(row[h.indexOf('Direction')], -1);
+})();
+await (async () => {
+  // COUNT_* corrections are Admin-only.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'COUNT_OUT', notes: 'Recount', operationId: opId() }), /FORBIDDEN/);
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture({ role: 'Admin' });
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'COUNT_OUT', notes: 'Recount', locationId: 'LOC-01', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+})();
+await (async () => {
+  // A RETURN must reference the original issue, and cannot exceed what was actually issued.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'ISSUE1', Type: 'ISSUE', Direction: -1, ProductID: 'PRD-0001', QtyBase: 5, LocationID: 'LOC-01', Status: 'ISSUED' }));
+  const result = await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, kind: 'RETURN', sourceTxnId: 'ISSUE1', notes: 'Technician returned unused stock', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, kind: 'RETURN', sourceTxnId: 'ISSUE1', notes: 'Too much', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'DAMAGE', operationId: opId() }), /VALIDATION/); // no reason given
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), and stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard).');
