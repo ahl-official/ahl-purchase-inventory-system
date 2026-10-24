@@ -104,7 +104,7 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
       ],
     },
     LEDGER: {
-      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit'],
+      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'ProductPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit', 'ReceivedByUserId'],
       rows: [],
     },
     PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
@@ -206,10 +206,9 @@ await (async () => {
   assert.equal(tabs.LISTS.rows.length, 4);
 })();
 
-await (async () => {
-  const { writeDirect } = fixture();
-  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { operationId: opId() }), /DIRECT_WRITE_UNAVAILABLE/);
-})();
+// (The "action not yet ported" fallback is now exercised by stock.receive's photo-attached
+// case further down -- every other action in this file is ported, so there's no longer a
+// whole action left to demonstrate the generic case with.)
 
 // ---- product.create ----
 await (async () => {
@@ -819,4 +818,82 @@ await (async () => {
   await assert.rejects(() => writeDirect('handover.cancel', 'hitesh@ahl.com', { handoverId: created.handoverId, notes: 'Trying to cancel someone else\'s handover', operationId: opId() }), /FORBIDDEN/);
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), and the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching).');
+// ---- stock.receive ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 5, amount: 1000, vendorId: 'VND-1', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  assert.equal(result.qtyBase, 2500); // 5 * ConvFactor 500
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows[0];
+  assert.equal(row[h.indexOf('Type')], 'RECEIPT');
+  assert.equal(row[h.indexOf('LocationID')], 'LOC-01'); // defaults to Head Office
+  // The price actually paid becomes the catalogue cost.
+  const ph = tabs.PRODUCTS.headers;
+  assert.equal(tabs.PRODUCTS.rows[0][ph.indexOf('Cost')], 1000 / 2500);
+})();
+await (async () => {
+  // Tied to an open order: the order's own delivery location wins, and quantity/units are checked against it.
+  const { writeDirect, tabs } = fixture();
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-X', ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
+  const result = await writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', poId: 'PO-X', qty: 4, operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  const h = tabs.LEDGER.headers;
+  assert.equal(tabs.LEDGER.rows[0][h.indexOf('PORef')], 'PO-X');
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-X', ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 2, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
+  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', poId: 'PO-X', qty: 5, operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // Receiving directly into a studio needs purchasing/management authority.
+  const { writeDirect } = fixture({ role: 'ProductDistributor' });
+  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', locationId: 'LOC-03', operationId: opId() }), /FORBIDDEN/);
+})();
+await (async () => {
+  // A request that attaches a bill photo isn't ported yet -- falls back to Apps Script.
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: 'abc123' }, operationId: opId() }), /DIRECT_WRITE_UNAVAILABLE/);
+})();
+
+// ---- stock.receiveOrders / multi-line stock.receive ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-A', ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-B', ProductID: 'PRD-0002', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
+  const result = await writeDirect('stock.receiveOrders', 'purchase@ahl.com', {
+    vendorId: 'VND-1', invoiceNo: 'INV-5', gstPercent: 18, discountedAmount: 900,
+    lines: [{ productId: 'PRD-0001', poId: 'PO-A', qty: 3, amount: 600 }, { productId: 'PRD-0002', poId: 'PO-B', qty: 2 }],
+    operationId: opId(),
+  });
+  assert.equal(result.txnIds.length, 2);
+  const h = tabs.LEDGER.headers;
+  const rowA = tabs.LEDGER.rows.find((r) => r[h.indexOf('PORef')] === 'PO-A');
+  const rowB = tabs.LEDGER.rows.find((r) => r[h.indexOf('PORef')] === 'PO-B');
+  assert.equal(rowA[h.indexOf('ReceiptID')], rowB[h.indexOf('ReceiptID')]); // one shared receipt
+  assert.equal(rowA[h.indexOf('Amount')], 600);
+  assert.equal(rowB[h.indexOf('Amount')], 2 * 200 * 1); // no amount given -> QtyBase * product cost
+  assert.match(String(rowA[h.indexOf('Notes')]), /GST 18% ₹/);
+  assert.match(String(rowA[h.indexOf('Notes')]), /Discounted price ₹900/);
+})();
+await (async () => {
+  // stock.receiveOrders requires every line to reference an order.
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('stock.receiveOrders', 'purchase@ahl.com', { vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', qty: 1 }], operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // Mixing ordered and unordered products in one multi-product bill is refused.
+  const { writeDirect, tabs } = fixture();
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-A', ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
+  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', poId: 'PO-A', qty: 1 }, { productId: 'PRD-0002', qty: 1 }], operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // Unordered multi-product bill (walk-in purchase, no PO): each line's own amount sets that product's cost.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('stock.receive', 'purchase@ahl.com', { vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', qty: 1, amount: 450 }], operationId: opId() });
+  assert.equal(result.txnIds.length, 1);
+  const ph = tabs.PRODUCTS.headers;
+  assert.equal(tabs.PRODUCTS.rows[0][ph.indexOf('Cost')], 450 / 500); // qtyBase = 1 * ConvFactor 500
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), and stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes, photo-attached fallback).');

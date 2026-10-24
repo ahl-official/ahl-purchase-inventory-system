@@ -1035,9 +1035,154 @@ async function handleHandoverCancel(token: string, actor: string, ctx: Ctx, data
   return { status: "CANCELLED" };
 }
 
+/**
+ * stock.receive/stock.receiveOrders always carry an OPTIONAL bill/product photo upload to
+ * Google Drive, which isn't ported yet (its own sub-phase, same as every other Drive write).
+ * The no-photo case -- almost every receipt in practice still ends with the paper bill filed
+ * separately -- is ported below; a request that actually attaches a photo falls back to Apps
+ * Script. This check runs before any read/write, so it's safe to throw even after
+ * beginOperation has marked the operation STARTED: nothing has been written yet, and Code.gs's
+ * own OPERATIONS handling allows a FAILED operation id to be retried.
+ */
+function assertNoPhotoAttached(data: Record<string, unknown>) {
+  const hasPhoto = (v: unknown) => !!(v && typeof v === "object" && (v as Record<string, unknown>).base64);
+  if (hasPhoto(data.photo) || hasPhoto(data.productPhoto)) throw new Error("DIRECT_WRITE_UNAVAILABLE: Action not yet ported.");
+}
+
+/** Records a delivery. Ported 1:1 from Ledger.gs processStockReceive (the no-photo path). */
+async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>): Promise<unknown> {
+  assertNoPhotoAttached(data);
+  if (data.lines) return handleStockReceiveLines(token, actor, ctx, data);
+  const headOfficeLocationId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
+
+  let order: ReturnType<typeof listPurchaseOrders>[number] | null = null;
+  if (data.poId) {
+    order = listPurchaseOrders(ctx).find((o) => o.orderId === data.poId) || null;
+    if (!order || order.productId !== data.productId || order.vendorId !== data.vendorId || ["CANCELLED", "RECEIVED"].includes(order.status)) {
+      throw new Error("VALIDATION: Select an open order matching product and vendor.");
+    }
+  }
+  // An order's own chosen destination is the only source of truth for where it lands.
+  const locationId = order ? String(order.deliveryLocationId) : String(data.locationId || headOfficeLocationId);
+  if (!order && locationId === getConfig(ctx, "DispatchLocationID", "LOC-05")) throw new Error("VALIDATION: Dispatch is not a delivery destination.");
+  if (!order && locationId !== headOfficeLocationId && !ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === locationId && isTruthy(v.Active) && v.Extra)) {
+    throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
+  }
+  if (locationId !== headOfficeLocationId && !["PurchaseCoordinator", "Admin"].includes(appRole((getUser(ctx, actor) || {}).Role))) {
+    throw new Error("FORBIDDEN: Only purchasing or management can receive stock directly into a studio.");
+  }
+  if (!data.productId) throw new Error("VALIDATION: No product selected.");
+  const product = getProduct(ctx, data.productId);
+  if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
+  const qty = positiveQuantity(data.qty, product, false);
+  if (qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
+  if (order) {
+    if (qty > order.remaining) throw new Error("VALIDATION: Received quantity exceeds the outstanding order.");
+    if (order.uom !== (product.PurchaseUOM || product.IssueUOM)) throw new Error("VALIDATION: Product units changed since ordering. Ask management to reconcile this order.");
+  }
+
+  const txnId = nextId("TXN");
+  // Deliveries arrive in the purchase unit; the ledger stores issue units.
+  const qtyBase = qty * (Number(product.ConvFactor) || 1);
+  const amount = Number(data.amount) || qtyBase * (Number(product.Cost) || 0);
+  await appendRow(token, "LEDGER", {
+    TxnID: txnId, ReceiptID: txnId, Date: dateToSerial(resolveTxnDate(data)), Type: "RECEIPT", Direction: 1,
+    ProductID: data.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
+    LocationID: locationId, CategoryID: data.categoryId || "", VendorID: data.vendorId || "", PORef: data.poId || "",
+    InvoiceNo: data.invoiceNo || "", Amount: amount, BillPhotoURL: "", ProductPhotoURL: "",
+    ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
+    Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : ""].filter(Boolean).join(" | "),
+  });
+
+  // The price actually paid is the most current cost there is.
+  if (data.amount && qtyBase > 0) {
+    await updateRow(token, "PRODUCTS", "ProductID", String(data.productId), { Cost: amount / qtyBase });
+  }
+  await auditWrite(token, actor, "stock.receive", txnId, data);
+  return { txnId, qtyBase, uom: product.IssueUOM, billUrl: "", billFileId: "", billViewUrl: "", productPhotoUrl: "" };
+}
+
+/** One vendor bill, many products. Ported 1:1 from Ledger.gs processStockReceiveLines (the no-photo path). */
+async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  assertNoPhotoAttached(data);
+  const headOfficeLocationId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
+  if (data.poId) throw new Error("VALIDATION: A multi-product bill cannot be tied to one order.");
+  if (!data.vendorId || !ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === data.vendorId && isTruthy(v.Active))) throw new Error("VALIDATION: Select a vendor.");
+  const lines = data.lines as Array<Record<string, unknown>> | undefined;
+  if (!lines || !lines.length) throw new Error("VALIDATION: Add at least one product.");
+  const linked = lines.some((l) => !!l.poId);
+  if (linked && lines.some((l) => !l.poId)) throw new Error("VALIDATION: Receive ordered and unordered products separately.");
+  const orders = linked ? listPurchaseOrders(ctx) : [];
+  const seenOrders: Record<string, boolean> = {};
+
+  const locationId = String(data.locationId || headOfficeLocationId);
+  if (locationId === getConfig(ctx, "DispatchLocationID", "LOC-05")) throw new Error("VALIDATION: Dispatch is not a delivery destination.");
+  if (locationId !== headOfficeLocationId && !ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === locationId && isTruthy(v.Active) && v.Extra)) {
+    throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
+  }
+  if (locationId !== headOfficeLocationId && !["PurchaseCoordinator", "Admin"].includes(appRole((getUser(ctx, actor) || {}).Role))) {
+    throw new Error("FORBIDDEN: Only purchasing or management can receive stock directly into a studio.");
+  }
+
+  const prepared = lines.map((line) => {
+    if (!line.productId) throw new Error("VALIDATION: No product selected.");
+    const product = getProduct(ctx, line.productId);
+    if (!product) throw new Error(`UNKNOWN_PRODUCT: ${line.productId} is not in PRODUCTS.`);
+    const qty = positiveQuantity(line.qty, product, false);
+    let order: ReturnType<typeof listPurchaseOrders>[number] | null = null;
+    if (linked) {
+      if (seenOrders[String(line.poId)]) throw new Error("VALIDATION: An order can appear only once per receipt.");
+      seenOrders[String(line.poId)] = true;
+      order = orders.find((o) => o.orderId === line.poId) || null;
+      if (!order || order.productId !== line.productId || order.vendorId !== data.vendorId || ["CANCELLED", "RECEIVED"].includes(order.status)) {
+        throw new Error("VALIDATION: Select an open order matching product and vendor. Refresh the orders.");
+      }
+      if (qty > order.remaining) throw new Error(`VALIDATION: Received quantity exceeds the outstanding order for ${product.Name}. Refresh the orders.`);
+      if (order.uom !== (product.PurchaseUOM || product.IssueUOM)) throw new Error("VALIDATION: Product units changed since ordering. Ask management to reconcile this order.");
+    }
+    const qtyBase = qty * (Number(product.ConvFactor) || 1);
+    const rawAmount = line.amount;
+    const hasAmount = rawAmount !== "" && rawAmount !== undefined && rawAmount !== null;
+    const amount = hasAmount ? Number(rawAmount) : 0;
+    if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
+    return { product, productId: line.productId, qty, qtyBase, amount, hasAmount, poId: order ? order.orderId : "", locationId: order ? order.deliveryLocationId : locationId };
+  });
+
+  const gst = data.gstPercent === "" || data.gstPercent === undefined || data.gstPercent === null ? "" : Number(data.gstPercent);
+  if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
+  const billGst = gst === "" ? "" : Math.round(prepared.reduce((sum, line) => sum + line.amount, 0) * gst) / 100;
+  const discounted = data.discountedAmount === "" || data.discountedAmount === undefined || data.discountedAmount === null ? "" : Number(data.discountedAmount);
+  if (discounted !== "" && (!isFinite(discounted) || discounted < 0)) throw new Error("VALIDATION: Enter a valid discounted price.");
+
+  const firstTxn = nextId("TXN");
+  const now = dateToSerial(resolveTxnDate(data));
+  const rows = prepared.map((line, i) => ({
+    TxnID: i === 0 ? firstTxn : nextId("TXN"), ReceiptID: firstTxn, Date: now, Type: "RECEIPT", Direction: 1,
+    ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
+    LocationID: line.locationId, PORef: line.poId, VendorID: data.vendorId, InvoiceNo: data.invoiceNo || "",
+    Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount,
+    GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
+    BillPhotoURL: "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
+    Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : "", gst === "" ? "" : `GST ${gst}% ₹${billGst}`, discounted === "" ? "" : `Discounted price ₹${discounted}`].filter(Boolean).join(" | "),
+  }));
+  for (const row of rows) await appendRow(token, "LEDGER", row);
+  for (const line of prepared) {
+    if (line.hasAmount && line.qtyBase > 0) await updateRow(token, "PRODUCTS", "ProductID", String(line.productId), { Cost: line.amount / line.qtyBase });
+  }
+  await auditWrite(token, actor, "stock.receive", firstTxn, data);
+  return { txnIds: rows.map((r) => r.TxnID), billUrl: "" };
+}
+
+/** Code.gs's stock.receiveOrders dispatch requires every line to carry a poId before ever reaching processStockReceiveLines. */
+async function handleStockReceiveOrders(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const lines = data.lines as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(lines) || !lines.length || lines.some((l) => !l.poId)) throw new Error("VALIDATION: Select at least one outstanding order.");
+  return handleStockReceiveLines(token, actor, ctx, data);
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -1064,6 +1209,8 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "stock.handover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.confirmHandover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "handover.cancel": ["PurchaseCoordinator", "Admin"],
+  "stock.receive": ["PurchaseCoordinator", "Admin"],
+  "stock.receiveOrders": ["PurchaseCoordinator", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -1106,6 +1253,8 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "stock.handover": result = await handleStockHandover(token, actor, ctx, data); break;
       case "stock.confirmHandover": result = await handleConfirmHandover(token, actor, ctx, data); break;
       case "handover.cancel": result = await handleHandoverCancel(token, actor, ctx, data); break;
+      case "stock.receive": result = await handleStockReceive(token, actor, ctx, data); break;
+      case "stock.receiveOrders": result = await handleStockReceiveOrders(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;
