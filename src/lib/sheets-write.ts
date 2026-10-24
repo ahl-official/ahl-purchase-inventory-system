@@ -871,9 +871,173 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
   return { txnId: id };
 }
 
+/** Shared receiver/destination validation for stock.handover (single and multi-line). Ported 1:1 from Ledger.gs. */
+function validateHandoverDestination(ctx: Ctx, actor: string, data: Record<string, unknown>) {
+  const fromLocationId = actorLocation(ctx, actor);
+  const salonId = getConfig(ctx, "SalonFloorLocationID", "LOC-02");
+  const toLocationId = String(data.toLocationId || salonId);
+  const destination = ctx.lists.find((v) => v.Type === "LOCATION" && v.Code === toLocationId && isTruthy(v.Active) && v.Extra);
+  if (!destination || toLocationId === fromLocationId) throw new Error("VALIDATION: Choose an active destination studio.");
+  const receiver = findRecord(ctx.people, "UserID", data.toUserId);
+  const senderUser = getUser(ctx, actor);
+  const selfConfirming = !!(senderUser && receiver && receiver.UserID === senderUser.UserID);
+  if (!receiver || !isTruthy(receiver.Active) || (appRole(receiver.Role) !== "ProductDistributor" && !selfConfirming)) throw new Error("VALIDATION: Select a receiver.");
+  if (toLocationId !== salonId && String(receiver.LocationID).trim() !== toLocationId && !selfConfirming) {
+    throw new Error(`VALIDATION: Select a receiver based at ${destination.Name}, or yourself if you will confirm it once it arrives.`);
+  }
+  return { fromLocationId, toLocationId };
+}
+
+/**
+ * Satvik hands physical stock from receiving over to Hitesh. Two ledger rows sharing one
+ * HandoverID, both PENDING_CONFIRM until processConfirmHandover flips them. Ported 1:1 from
+ * Ledger.gs processStockHandover/processStockHandoverLines.
+ */
+async function handleStockHandover(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>): Promise<unknown> {
+  if (data.lines) return handleStockHandoverLines(token, actor, ctx, data);
+  if (!data.productId) throw new Error("VALIDATION: No product selected.");
+  const qty = Number(data.qty) || 0;
+  if (qty <= 0) throw new Error("VALIDATION: Quantity must be greater than zero.");
+  const product = getProduct(ctx, data.productId);
+  if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
+  const { fromLocationId, toLocationId } = validateHandoverDestination(ctx, actor, data);
+  positiveQuantity(qty, product, false);
+  const available = availableBalance(ctx, data.productId, fromLocationId);
+  if (qty > available) throw new Error(`INSUFFICIENT_STOCK: ${available} ${product.IssueUOM} sitting at ${fromLocationId}, tried to hand over ${qty}.`);
+
+  const handoverId = nextId("HND");
+  const now = dateToSerial(resolveTxnDate(data));
+  await appendRow(token, "LEDGER", {
+    TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: data.productId, Qty: qty,
+    UOM: product.IssueUOM, QtyBase: qty, LocationID: fromLocationId, HandoverID: handoverId,
+    PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+  });
+  await appendRow(token, "LEDGER", {
+    TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: data.productId, Qty: qty,
+    UOM: product.IssueUOM, QtyBase: qty, LocationID: toLocationId, HandoverID: handoverId,
+    PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+  });
+  await auditWrite(token, actor, "stock.handover", handoverId, { productId: data.productId, qty, fromLocationId, toLocationId });
+  if (data.requestId) await updateRow(token, "REQUESTS", "RequestID", String(data.requestId), { Status: "SUPPLIED" });
+  return { handoverId, qty, uom: product.IssueUOM };
+}
+
+/** Several products, one destination and one receiver. Ported 1:1 from Ledger.gs processStockHandoverLines. */
+async function handleStockHandoverLines(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const lines = data.lines as Array<Record<string, unknown>> | undefined;
+  if (!lines || !lines.length) throw new Error("VALIDATION: Add at least one product.");
+  const { fromLocationId, toLocationId } = validateHandoverDestination(ctx, actor, data);
+
+  const seen: Record<string, boolean> = {};
+  const prepared = lines.map((line) => {
+    if (!line.productId) throw new Error("VALIDATION: No product selected.");
+    const product = getProduct(ctx, line.productId);
+    if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+    if (seen[String(line.productId)]) throw new Error(`VALIDATION: ${product.Name} is already on this handover. Increase its quantity.`);
+    seen[String(line.productId)] = true;
+    const qty = positiveQuantity(line.qty, product, false);
+    const available = availableBalance(ctx, line.productId, fromLocationId);
+    if (qty > available) throw new Error(`INSUFFICIENT_STOCK: ${available} ${product.IssueUOM} sitting at ${fromLocationId}, tried to hand over ${qty} of ${product.Name}.`);
+    return { product, productId: line.productId, qty, requestId: String(line.requestId || "").trim() };
+  });
+
+  const now = dateToSerial(resolveTxnDate(data));
+  const ids: string[] = [];
+  for (const line of prepared) {
+    const handoverId = nextId("HND");
+    await appendRow(token, "LEDGER", {
+      TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: line.productId, Qty: line.qty,
+      UOM: line.product.IssueUOM, QtyBase: line.qty, LocationID: fromLocationId, HandoverID: handoverId,
+      PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+    });
+    await appendRow(token, "LEDGER", {
+      TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty,
+      UOM: line.product.IssueUOM, QtyBase: line.qty, LocationID: toLocationId, HandoverID: handoverId,
+      PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+    });
+    ids.push(handoverId);
+  }
+  for (const line of prepared) {
+    if (line.requestId) await updateRow(token, "REQUESTS", "RequestID", line.requestId, { Status: "SUPPLIED" });
+  }
+  await auditWrite(token, actor, "stock.handover", ids[0], { count: ids.length, fromLocationId, toLocationId });
+  return { handoverIds: ids };
+}
+
+/**
+ * Hitesh confirms a handover after his own recount. Ported from Ledger.gs processConfirmHandover,
+ * with one deliberate drop: the source requires the two PENDING_CONFIRM rows to sit on physically
+ * adjacent sheet rows (an artifact of writing them with one Range.setValues() call) and refuses
+ * ("needs management review") otherwise. That adjacency has no business meaning and the Sheets
+ * API has no equivalent single-range write anyway -- two independent appendRow calls creating a
+ * handover's pair can legitimately land non-adjacent under concurrent writes from other actions.
+ * This version keeps the real invariant (exactly one PENDING_CONFIRM row in each direction for
+ * this HandoverID) and updates each row independently, verified immediately before writing.
+ */
+async function handleConfirmHandover(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const handoverId = String(data.handoverId || "").trim();
+  if (!handoverId) throw new Error("VALIDATION: No handover selected.");
+  const rows = ctx.ledger.filter((r) => String(r.HandoverID).trim() === handoverId);
+  const incoming = rows.find((r) => Number(r.Direction) === 1);
+  if (!incoming) throw new Error(`NOT_FOUND: No pending handover ${handoverId} to confirm.`);
+  const expectedQty = Number(incoming.Qty);
+  const expectedReceiverId = String(incoming.PersonID || "").trim();
+
+  const actorUser = getUser(ctx, actor);
+  const actorRole = appRole((actorUser || {}).Role);
+  if (actorRole !== "Admin" && expectedReceiverId && String(actorUser?.UserID) !== expectedReceiverId) {
+    throw new Error("FORBIDDEN: Only the selected receiver can confirm this handover.");
+  }
+  const countedQty = Number(data.countedQty);
+  if (!isFinite(countedQty) || countedQty < 0) throw new Error("VALIDATION: Enter the quantity physically counted.");
+  const isMismatch = Math.abs(countedQty - expectedQty) > 0.000001;
+
+  const pending = rows.filter((r) => String(r.Status).trim() === "PENDING_CONFIRM");
+  if (pending.length !== 2) throw new Error("VALIDATION: This handover is already decided or needs management review.");
+
+  for (const row of pending) {
+    const changes: Record<string, unknown> = {};
+    if (!isMismatch) changes.Status = "CONFIRMED";
+    if (data.notes) changes.Notes = `${row.Notes ? `${row.Notes} | ` : ""}Receiver counted ${countedQty}: ${data.notes}`;
+    if (Object.keys(changes).length) {
+      await updateRow(token, "LEDGER", "TxnID", String(row.TxnID), changes, (fresh) => {
+        if (String(fresh.Status).trim() !== "PENDING_CONFIRM") throw new Error("VALIDATION: This handover is already decided or needs management review.");
+      });
+    }
+  }
+
+  if (isMismatch) {
+    await auditWrite(token, actor, "stock.confirmHandover.mismatch", handoverId, { expectedQty, countedQty, notes: data.notes || "" }, "REVIEW");
+    throw new Error(`COUNT_MISMATCH: Satvik recorded ${expectedQty} but you counted ${countedQty}. The handover is still pending; add a note and resolve it together.`);
+  }
+  await auditWrite(token, actor, "stock.confirmHandover", handoverId, { rowsConfirmed: pending.length, countedQty, notes: data.notes || "" });
+  return { handoverId, rowsConfirmed: pending.length };
+}
+
+/**
+ * Only the sender can withdraw a still-unconfirmed handover. Receiver stock is unchanged.
+ * Ported from Operations.gs processHandoverCancel, with the same adjacency drop as
+ * handleConfirmHandover above, for the same reason.
+ */
+async function handleHandoverCancel(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const role = appRole((getUser(ctx, actor) || {}).Role);
+  if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Explain the cancellation.");
+  const handoverId = String(data.handoverId || "");
+  const matching = ctx.ledger.filter((r) => String(r.HandoverID) === handoverId && r.Type === "HANDOVER");
+  if (matching.length !== 2 || matching.some((r) => r.Status !== "PENDING_CONFIRM")) throw new Error("VALIDATION: Only an unconfirmed handover can be cancelled.");
+  if (role !== "Admin" && matching.some((r) => r.Actor !== actor)) throw new Error("FORBIDDEN: Only the sender can cancel.");
+  for (const row of matching) {
+    await updateRow(token, "LEDGER", "TxnID", String(row.TxnID), { Status: "VOID", Notes: `${row.Notes || ""} | Cancelled: ${data.notes}` }, (fresh) => {
+      if (String(fresh.Status) !== "PENDING_CONFIRM") throw new Error("VALIDATION: Only an unconfirmed handover can be cancelled.");
+    });
+  }
+  await auditWrite(token, actor, "handover.cancel", handoverId, data);
+  return { status: "CANCELLED" };
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -897,6 +1061,9 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.adjust": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "stock.handover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "stock.confirmHandover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "handover.cancel": ["PurchaseCoordinator", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -936,6 +1103,9 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "stock.issue": result = await handleStockIssue(token, actor, ctx, data); break;
       case "stock.retailSale": result = await handleRetailSale(token, actor, ctx, data); break;
       case "stock.adjust": result = await handleStockAdjustment(token, actor, ctx, data); break;
+      case "stock.handover": result = await handleStockHandover(token, actor, ctx, data); break;
+      case "stock.confirmHandover": result = await handleConfirmHandover(token, actor, ctx, data); break;
+      case "handover.cancel": result = await handleHandoverCancel(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;

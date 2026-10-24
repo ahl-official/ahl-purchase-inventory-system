@@ -90,9 +90,19 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
     },
     PEOPLE: {
       headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'],
-      rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active], ['U2', 'tech@ahl.com', 'Tech One', 'Technician', 'LOC-01', true]],
+      rows: [
+        ['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active],
+        ['U2', 'tech@ahl.com', 'Tech One', 'Technician', 'LOC-01', true],
+        ['U3', 'hitesh@ahl.com', 'Hitesh', 'ProductDistributor', 'LOC-02', true],
+      ],
     },
-    LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true]] },
+    LISTS: {
+      headers: ['Type', 'Code', 'Name', 'Extra', 'Active'],
+      rows: [
+        ['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true],
+        ['LOCATION', 'LOC-02', 'Salon Floor', 'Mumbai', true], ['LOCATION', 'LOC-03', 'Delhi Studio', 'Delhi', true],
+      ],
+    },
     LEDGER: {
       headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit'],
       rows: [],
@@ -160,7 +170,7 @@ await (async () => {
   const result = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'New Vendor', operationId: id1 });
   assert.match(result.id, /^VND-/);
   assert.equal(result.name, 'New Vendor');
-  assert.equal(tabs.LISTS.rows.length, 3); // 2 baseline (vendor + category) + 1 new
+  assert.equal(tabs.LISTS.rows.length, 5); // 4 baseline (vendor + category + 2 locations) + 1 new
   assert.equal(tabs.OPERATIONS.rows.find(r => r[0] === id1)[4], 'COMPLETED');
   assert.equal(mock.calls.append.some(c => c.tab === 'AUDIT'), true);
 })();
@@ -170,7 +180,7 @@ await (async () => {
   const { writeDirect, tabs } = fixture();
   const result = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'vela (well vibes)', operationId: opId() });
   assert.equal(result.id, 'VND-1');
-  assert.equal(tabs.LISTS.rows.length, 2); // baseline only, no new write
+  assert.equal(tabs.LISTS.rows.length, 4); // baseline only, no new write
 })();
 
 await (async () => {
@@ -180,20 +190,20 @@ await (async () => {
   const first = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'Repeat Co', operationId: id });
   const second = await writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'Repeat Co', operationId: id });
   assert.deepEqual(first, second);
-  assert.equal(tabs.LISTS.rows.length, 3); // only the first call actually wrote
+  assert.equal(tabs.LISTS.rows.length, 5); // only the first call actually wrote
 })();
 
 for (const data of [{ type: 'VENDOR', name: 'X' }, { type: 'NOT_A_TYPE', name: 'Valid Name' }]) {
   const { writeDirect, tabs } = fixture();
   await assert.rejects(() => writeDirect('list.add', 'purchase@ahl.com', { ...data, operationId: opId() }), /VALIDATION/);
-  assert.equal(tabs.LISTS.rows.length, 2); // nothing written on a rejected validation
+  assert.equal(tabs.LISTS.rows.length, 4); // nothing written on a rejected validation
 }
 
 await (async () => {
   // An inactive/wrong-role actor is refused before anything is read or written.
   const { writeDirect, tabs } = fixture({ role: 'Technician' });
   await assert.rejects(() => writeDirect('list.add', 'purchase@ahl.com', { type: 'VENDOR', name: 'Nope', operationId: opId() }), /FORBIDDEN/);
-  assert.equal(tabs.LISTS.rows.length, 2);
+  assert.equal(tabs.LISTS.rows.length, 4);
 })();
 
 await (async () => {
@@ -708,4 +718,105 @@ await (async () => {
   await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'DAMAGE', operationId: opId() }), /VALIDATION/); // no reason given
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), and stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard).');
+// ---- stock.handover ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, toUserId: 'U3', operationId: opId() });
+  assert.match(result.handoverId, /^HND-/);
+  assert.equal(result.qty, 3);
+  const h = tabs.LEDGER.headers;
+  const pair = tabs.LEDGER.rows.filter((r) => r[h.indexOf('HandoverID')] === result.handoverId);
+  assert.equal(pair.length, 2);
+  assert.equal(pair.every((r) => r[h.indexOf('Status')] === 'PENDING_CONFIRM'), true);
+  assert.equal(pair.find((r) => r[h.indexOf('Direction')] === -1)[h.indexOf('LocationID')], 'LOC-01');
+  assert.equal(pair.find((r) => r[h.indexOf('Direction')] === 1)[h.indexOf('LocationID')], 'LOC-02'); // default Salon Floor
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 1, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 5, toUserId: 'U3', operationId: opId() }), /INSUFFICIENT_STOCK/);
+})();
+await (async () => {
+  // Same location as the sender's own is not a valid destination.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, toLocationId: 'LOC-01', toUserId: 'U3', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // A technician is neither a ProductDistributor nor the sender themself.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, toUserId: 'U2', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // Supplying from stock closes the request it fulfils.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  tabs.REQUESTS.rows.push(rowFor(tabs, 'REQUESTS', { RequestID: 'REQ-10', ProductID: 'PRD-0001', Status: 'OPEN' }));
+  await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, toUserId: 'U3', requestId: 'REQ-10', operationId: opId() });
+  const h = tabs.REQUESTS.headers;
+  assert.equal(tabs.REQUESTS.rows.find((r) => r[h.indexOf('RequestID')] === 'REQ-10')[h.indexOf('Status')], 'SUPPLIED');
+})();
+await (async () => {
+  // Multi-product handover: one handoverId per line.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED2', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0002', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const result = await writeDirect('stock.handover', 'purchase@ahl.com', { lines: [{ productId: 'PRD-0001', qty: 1 }, { productId: 'PRD-0002', qty: 1 }], toUserId: 'U3', operationId: opId() });
+  assert.equal(result.handoverIds.length, 2);
+  assert.notEqual(result.handoverIds[0], result.handoverIds[1]);
+})();
+
+// ---- stock.confirmHandover ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const created = await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, toUserId: 'U3', operationId: opId() });
+  const result = await writeDirect('stock.confirmHandover', 'hitesh@ahl.com', { handoverId: created.handoverId, countedQty: 3, operationId: opId() });
+  assert.equal(result.rowsConfirmed, 2);
+  const h = tabs.LEDGER.headers;
+  assert.equal(tabs.LEDGER.rows.filter((r) => r[h.indexOf('HandoverID')] === created.handoverId).every((r) => r[h.indexOf('Status')] === 'CONFIRMED'), true);
+  // Re-confirming an already-decided handover is refused.
+  await assert.rejects(() => writeDirect('stock.confirmHandover', 'hitesh@ahl.com', { handoverId: created.handoverId, countedQty: 3, operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // A count mismatch leaves both rows pending, records the note, and reports COUNT_MISMATCH.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const created = await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, toUserId: 'U3', operationId: opId() });
+  await assert.rejects(() => writeDirect('stock.confirmHandover', 'hitesh@ahl.com', { handoverId: created.handoverId, countedQty: 2, notes: 'Short by one', operationId: opId() }), /COUNT_MISMATCH/);
+  const h = tabs.LEDGER.headers;
+  const pair = tabs.LEDGER.rows.filter((r) => r[h.indexOf('HandoverID')] === created.handoverId);
+  assert.equal(pair.every((r) => r[h.indexOf('Status')] === 'PENDING_CONFIRM'), true); // still pending
+  assert.equal(pair.every((r) => String(r[h.indexOf('Notes')]).includes('Receiver counted 2: Short by one')), true);
+})();
+await (async () => {
+  // Only the named receiver (or an admin) may confirm.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const created = await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, toUserId: 'U3', operationId: opId() });
+  await assert.rejects(() => writeDirect('stock.confirmHandover', 'tech@ahl.com', { handoverId: created.handoverId, countedQty: 3, operationId: opId() }), /FORBIDDEN/);
+})();
+
+// ---- handover.cancel ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const created = await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, toUserId: 'U3', operationId: opId() });
+  const result = await writeDirect('handover.cancel', 'purchase@ahl.com', { handoverId: created.handoverId, notes: 'Wrong recipient', operationId: opId() });
+  assert.equal(result.status, 'CANCELLED');
+  const h = tabs.LEDGER.headers;
+  assert.equal(tabs.LEDGER.rows.filter((r) => r[h.indexOf('HandoverID')] === created.handoverId).every((r) => r[h.indexOf('Status')] === 'VOID'), true);
+  // Cancelling an already-cancelled handover is refused.
+  await assert.rejects(() => writeDirect('handover.cancel', 'purchase@ahl.com', { handoverId: created.handoverId, notes: 'Again', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // Only the sender (or an admin) can cancel.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const created = await writeDirect('stock.handover', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, toUserId: 'U3', operationId: opId() });
+  await assert.rejects(() => writeDirect('handover.cancel', 'hitesh@ahl.com', { handoverId: created.handoverId, notes: 'Trying to cancel someone else\'s handover', operationId: opId() }), /FORBIDDEN/);
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), and the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching).');
