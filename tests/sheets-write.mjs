@@ -82,13 +82,16 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
   const tabs = {
     PRODUCTS: {
       headers: ['ProductID', 'Name', 'CategoryID', 'IssueUOM', 'PurchaseUOM', 'ConvFactor', 'Cost', 'GSTPercent', 'VendorID', 'ReorderLevel', 'Active', 'Notes', 'ProductType'],
-      rows: [['PRD-0001', 'Shampoo', 'CAT-1', 'ML', 'BOTTLE', 500, 2, 0.18, 'VND-1', 5, true, '', 'Consumable']],
+      rows: [
+        ['PRD-0001', 'Shampoo', 'CAT-1', 'ML', 'BOTTLE', 500, 2, 0.18, 'VND-1', 5, true, '', 'Consumable'],
+        ['PRD-0002', 'Hair Oil', 'CAT-1', 'ML', 'BOTTLE', 200, 1, 0.18, 'VND-1', 2, true, '', 'Consumable'],
+      ],
     },
     PEOPLE: { headers: ['UserID', 'Email', 'Name', 'Role', 'LocationID', 'Active'], rows: [['U1', 'purchase@ahl.com', 'Satvik', role, 'LOC-01', active]] },
     LISTS: { headers: ['Type', 'Code', 'Name', 'Extra', 'Active'], rows: [['VENDOR', 'VND-1', 'Vela (Well Vibes)', '', true], ['CATEGORY', 'CAT-1', 'Hair Care', '', true]] },
-    LEDGER: { headers: ['ProductID'], rows: [] },
-    PURCHASE_ORDERS: { headers: ['OrderID'], rows: [] },
-    REQUESTS: { headers: ['RequestID'], rows: [] },
+    LEDGER: { headers: ['Type', 'Status', 'PORef', 'Qty', 'QtyBase', 'ProductID', 'LocationID', 'Direction'], rows: [] },
+    PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
+    REQUESTS: { headers: ['RequestID', 'ProductID', 'Status'], rows: [['REQ-1', 'PRD-0001', 'OPEN']] },
     OPENING_COUNTS: { headers: ['CountID'], rows: [] },
     OPERATIONS: { headers: ['OperationID', 'Date', 'Actor', 'Action', 'Status', 'Result'], rows: [] },
     AUDIT: { headers: ['AuditID', 'Timestamp', 'Actor', 'Action', 'Ref', 'Detail', 'Result'], rows: [] },
@@ -105,7 +108,7 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
   const writeRequire = (path) => (path === './sheets-direct' ? sheetsDirectExports : require(path));
   const sheetsWrite = loadModule(sheetsWriteCompiled, writeRequire, mock.fetchImpl, 'sheets-write.js');
 
-  return { mock, tabs, writeDirect: sheetsWrite.writeDirect };
+  return { mock, tabs, writeDirect: sheetsWrite.writeDirect, sheetsDirect: sheetsDirectExports };
 }
 
 const opId = () => 'op-' + crypto.randomBytes(8).toString('hex');
@@ -164,8 +167,8 @@ await (async () => {
     name: 'Conditioner', productType: 'Consumable', purchaseUom: 'BOTTLE', issueUom: 'ML', convFactor: '250',
     categoryId: 'CAT-1', vendorId: 'VND-1', cost: '10', gstPercent: '18', reorderLevel: '2', operationId: opId(),
   });
-  assert.equal(result.productId, 'PRD-0002'); // sequential, after the fixture's PRD-0001
-  assert.equal(tabs.PRODUCTS.rows.length, 2);
+  assert.equal(result.productId, 'PRD-0003'); // sequential, after the fixture's PRD-0001/PRD-0002
+  assert.equal(tabs.PRODUCTS.rows.length, 3);
   assert.equal(mock.calls.append.some(c => c.tab === 'AUDIT' && c.values[0].includes('product.create')), true);
 })();
 await (async () => {
@@ -247,4 +250,115 @@ await (async () => {
   assert.equal(tabs.PRODUCTS.rows[0][10], true);
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, and the product-management batch (create/setVendor/editUnit/delete/restore).');
+// ---- order.create ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  assert.match(result.orderId, /^PO-/);
+  assert.equal(result.deliveryLocationId, 'LOC-01'); // default head office, no SETTING override in the fixture
+  assert.equal(tabs.PURCHASE_ORDERS.rows.length, 1);
+  const headers = tabs.PURCHASE_ORDERS.headers, row = tabs.PURCHASE_ORDERS.rows[0];
+  assert.equal(row[headers.indexOf('Status')], 'ORDERED');
+  assert.equal(row[headers.indexOf('BatchID')], result.orderId); // single order's own id is its batch id
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-9999', vendorId: 'VND-1', qty: 10, operationId: opId() }), /UNKNOWN_PRODUCT/);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-NOPE', qty: 10, operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // Wrong role (order actions are PurchaseCoordinator/Admin only, unlike product actions).
+  const { writeDirect } = fixture({ role: 'ProductDistributor' });
+  await assert.rejects(() => writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() }), /FORBIDDEN/);
+})();
+await (async () => {
+  // Ordering against an approved request flips it to ORDERED; a second order against the same request is refused.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 4, requestId: 'REQ-1', operationId: opId() });
+  assert.equal(tabs.REQUESTS.rows[0][tabs.REQUESTS.headers.indexOf('Status')], 'ORDERED');
+  await assert.rejects(() => writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 2, requestId: 'REQ-1', operationId: opId() }), /DUPLICATE/);
+  void result;
+})();
+
+// ---- order.create (multi-product lines, one invoice-style batch) ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('order.create', 'purchase@ahl.com', {
+    vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', qty: 5 }, { productId: 'PRD-0002', qty: 3, unitPrice: 12.5 }], operationId: opId(),
+  });
+  assert.equal(result.orderIds.length, 2);
+  assert.equal(tabs.PURCHASE_ORDERS.rows.length, 2);
+  const headers = tabs.PURCHASE_ORDERS.headers;
+  assert.equal(tabs.PURCHASE_ORDERS.rows[0][headers.indexOf('BatchID')], result.orderIds[0]);
+  assert.equal(tabs.PURCHASE_ORDERS.rows[1][headers.indexOf('BatchID')], result.orderIds[0]); // both lines share the first id as batch id
+  assert.equal(tabs.PURCHASE_ORDERS.rows[0][headers.indexOf('UnitPrice')], ''); // no price given for this line
+  assert.equal(tabs.PURCHASE_ORDERS.rows[1][headers.indexOf('UnitPrice')], 12.5);
+})();
+
+// ---- order.cancel ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  const result = await writeDirect('order.cancel', 'purchase@ahl.com', { orderId: created.orderId, notes: 'Vendor out of stock', operationId: opId() });
+  assert.equal(result.status, 'CANCELLED');
+  const headers = tabs.PURCHASE_ORDERS.headers, row = tabs.PURCHASE_ORDERS.rows[0];
+  assert.equal(row[headers.indexOf('Status')], 'CANCELLED');
+  assert.match(String(row[headers.indexOf('Notes')]), /Cancelled: Vendor out of stock/);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('order.cancel', 'purchase@ahl.com', { orderId: 'PO-NOPE', notes: 'x', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // No reason given -> refused before the sheet is touched.
+  const { writeDirect } = fixture();
+  const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  await assert.rejects(() => writeDirect('order.cancel', 'purchase@ahl.com', { orderId: created.orderId, notes: '', operationId: opId() }), /VALIDATION/);
+})();
+
+// ---- order.edit ----
+await (async () => {
+  const { writeDirect, tabs, sheetsDirect } = fixture();
+  const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  const headers = tabs.PURCHASE_ORDERS.headers, raw = tabs.PURCHASE_ORDERS.rows[0];
+  const expected = { qty: 10, vendorId: 'VND-1', notes: '', date: sheetsDirect.serialToDate(raw[headers.indexOf('Date')]).toISOString() };
+  const result = await writeDirect('order.edit', 'purchase@ahl.com', {
+    orderId: created.orderId, reason: 'Vendor corrected the quantity', qty: 12, vendorId: 'VND-1', expected, operationId: opId(),
+  });
+  assert.equal(result.orderId, created.orderId);
+  assert.equal(tabs.PURCHASE_ORDERS.rows[0][headers.indexOf('QtyOrdered')], 12);
+})();
+await (async () => {
+  // A stale `expected` (order changed since the form loaded) is refused, and nothing is written.
+  const { writeDirect, tabs } = fixture();
+  const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  const headers = tabs.PURCHASE_ORDERS.headers;
+  const staleExpected = { qty: 999, vendorId: 'VND-1', notes: '', date: new Date().toISOString() };
+  await assert.rejects(() => writeDirect('order.edit', 'purchase@ahl.com', {
+    orderId: created.orderId, reason: 'Trying to edit', qty: 12, vendorId: 'VND-1', expected: staleExpected, operationId: opId(),
+  }), /STALE_ENTRY/);
+  assert.equal(tabs.PURCHASE_ORDERS.rows[0][headers.indexOf('QtyOrdered')], 10); // unchanged
+})();
+
+// ---- order.delete ----
+await (async () => {
+  // Delegates to order.cancel exactly like EntryChanges.gs -- same CANCELLED status, no separate audit entry.
+  const { writeDirect, tabs, mock } = fixture();
+  const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  const result = await writeDirect('order.delete', 'purchase@ahl.com', { orderId: created.orderId, reason: 'Entered by mistake', operationId: opId() });
+  assert.equal(result.status, 'CANCELLED');
+  assert.equal(mock.calls.append.some(c => c.tab === 'AUDIT' && c.values[0].includes('order.delete')), false);
+  assert.equal(mock.calls.append.some(c => c.tab === 'AUDIT' && c.values[0].includes('order.cancel')), true);
+})();
+await (async () => {
+  // A partially received order cannot be deleted -- the receipts must be corrected first.
+  const { writeDirect, tabs } = fixture();
+  const created = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  tabs.LEDGER.rows.push(['RECEIPT', 'POSTED', created.orderId, 5, 5, 'PRD-0001', 'LOC-01', 1]);
+  await assert.rejects(() => writeDirect('order.delete', 'purchase@ahl.com', { orderId: created.orderId, reason: 'Entered by mistake', operationId: opId() }), /VALIDATION/);
+})();
+
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), and the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete).');

@@ -199,7 +199,7 @@ function getCatalogue(ctx: Ctx) {
   };
 }
 
-function listPurchaseOrders(ctx: Ctx) {
+export function listPurchaseOrders(ctx: Ctx) {
   const ledger = ctx.ledger;
   const headOfficeId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
   return ctx.purchaseOrders.map((r) => {

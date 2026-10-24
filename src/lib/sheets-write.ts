@@ -25,7 +25,8 @@
  */
 import { createSign, randomUUID } from "node:crypto";
 import {
-  requireEnv, loadContext, isTruthy, appRole, getUser, getProduct,
+  requireEnv, loadContext, isTruthy, appRole, getUser, getProduct, getConfig,
+  findRecord, listPurchaseOrders, serialToDate,
   type Ctx, type Row,
 } from "./sheets-direct";
 
@@ -305,9 +306,159 @@ async function handleProductRestore(token: string, actor: string, ctx: Ctx, data
   return { productId, changed: true };
 }
 
+/** Ported 1:1 from Operations.gs positiveQuantity. */
+function positiveQuantity(value: unknown, product: Row | null, allowZero: boolean): number {
+  const qty = Number(value);
+  if (!isFinite(qty) || (allowZero ? qty < 0 : qty <= 0)) throw new Error("VALIDATION: Enter a valid quantity.");
+  if (product && product.IssueUOM === "PCS" && Math.floor(qty) !== qty) throw new Error("VALIDATION: Pieces must be whole numbers.");
+  return qty;
+}
+
+/** Ported 1:1 from EntryChanges.gs entryChangeReason. */
+function entryChangeReason(req: Record<string, unknown>): string {
+  const reason = String(req.reason || "").trim();
+  if (reason.length < 3) throw new Error("VALIDATION: Explain the edit or deletion.");
+  return reason;
+}
+
+/** Ported 1:1 from Validation.gs resolveTxnDate. */
+function resolveTxnDate(req: Record<string, unknown>): Date {
+  if (!req || !req.date) return new Date();
+  const d = new Date(`${req.date}T12:00:00`);
+  if (isNaN(d.getTime())) throw new Error("VALIDATION: Enter a valid date.");
+  const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+  if (d.getTime() > endOfToday.getTime()) throw new Error("VALIDATION: The date cannot be in the future.");
+  return d;
+}
+
+/** Ported 1:1 from Operations.gs processOrderCreate / processOrderCreateLines. */
+async function handleOrderCreate(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>): Promise<unknown> {
+  if (data.lines) return handleOrderCreateLines(token, actor, ctx, data);
+  const p = getProduct(ctx, data.productId);
+  if (!p || !isTruthy(p.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+  const qty = positiveQuantity(data.qty, p, false);
+  if (!ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === data.vendorId && isTruthy(v.Active))) throw new Error("VALIDATION: Select a vendor.");
+  const headOfficeId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
+  const deliveryLocationId = String(data.locationId || headOfficeId);
+  if (deliveryLocationId === getConfig(ctx, "DispatchLocationID", "LOC-05")) throw new Error("VALIDATION: Dispatch is not a delivery destination.");
+  if (deliveryLocationId !== headOfficeId && !ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra)) {
+    throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
+  }
+  if (data.requestId) {
+    const request = findRecord(ctx.requests, "RequestID", data.requestId);
+    if (!request || request.ProductID !== data.productId || !["OPEN", "ORDERED"].includes(String(request.Status))) throw new Error("VALIDATION: Select an approved request for this product.");
+    if (listPurchaseOrders(ctx).some((o) => o.requestId === data.requestId && o.status !== "CANCELLED")) throw new Error("DUPLICATE: This request already has an order.");
+  }
+  const id = nextId("PO");
+  await appendRow(token, "PURCHASE_ORDERS", {
+    OrderID: id, Date: dateToSerial(resolveTxnDate(data)), ProductID: data.productId, VendorID: data.vendorId,
+    QtyOrdered: qty, UOM: p.PurchaseUOM || p.IssueUOM, RequestID: data.requestId || "", Status: "ORDERED",
+    Actor: actor, Notes: data.notes || "", DeliveryLocationID: deliveryLocationId, BatchID: id,
+  });
+  if (data.requestId) await updateRow(token, "REQUESTS", "RequestID", String(data.requestId), { Status: "ORDERED" });
+  await auditWrite(token, actor, "order.create", id, data);
+  return { orderId: id, deliveryLocationId };
+}
+
+/** One vendor, several products. Does not change stock. Ported 1:1 from Operations.gs processOrderCreateLines. */
+async function handleOrderCreateLines(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  if (data.requestId) throw new Error("VALIDATION: An order from a request is one product.");
+  const lines = data.lines as Array<Record<string, unknown>> | undefined;
+  if (!lines || !lines.length) throw new Error("VALIDATION: Add at least one product.");
+  if (!ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === data.vendorId && isTruthy(v.Active))) throw new Error("VALIDATION: Select a vendor.");
+  const headOfficeId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
+  const deliveryLocationId = String(data.locationId || headOfficeId);
+  if (deliveryLocationId !== headOfficeId && !ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra)) {
+    throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
+  }
+  const dispatchId = getConfig(ctx, "DispatchLocationID", "LOC-05");
+  if (deliveryLocationId === dispatchId) throw new Error("VALIDATION: Dispatch is not a delivery destination.");
+  const prepared = lines.map((line) => {
+    const p = getProduct(ctx, line.productId);
+    if (!p || !isTruthy(p.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
+    const qty = positiveQuantity(line.qty, p, false);
+    const price = line.unitPrice === "" || line.unitPrice === undefined || line.unitPrice === null ? "" : Number(line.unitPrice);
+    if (price !== "" && (!isFinite(price as number) || (price as number) < 0)) throw new Error("VALIDATION: Enter a valid unit price.");
+    return { product: p, productId: line.productId, qty, notes: String(data.notes || "").trim(), unitPrice: price };
+  });
+  const date = dateToSerial(resolveTxnDate(data));
+  let batchId = "";
+  const ids: string[] = [];
+  for (const line of prepared) {
+    const id = nextId("PO");
+    if (!batchId) batchId = id;
+    await appendRow(token, "PURCHASE_ORDERS", {
+      OrderID: id, Date: date, ProductID: line.productId, VendorID: data.vendorId, QtyOrdered: line.qty,
+      UOM: line.product!.PurchaseUOM || line.product!.IssueUOM, RequestID: "", Status: "ORDERED", Actor: actor,
+      Notes: line.notes, DeliveryLocationID: deliveryLocationId, UnitPrice: line.unitPrice, BatchID: batchId,
+    });
+    ids.push(id);
+  }
+  await auditWrite(token, actor, "order.create", ids[0], { count: ids.length, vendorId: data.vendorId });
+  return { orderIds: ids, deliveryLocationId };
+}
+
+/** Ported 1:1 from Operations.gs processOrderCancel. */
+async function handleOrderCancel(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Give a cancellation reason.");
+  const order = findRecord(ctx.purchaseOrders, "OrderID", data.orderId);
+  if (!order || order.Status === "CANCELLED") throw new Error("VALIDATION: Order is not open.");
+  const checkStale = (fresh: Row) => { if (fresh.Status === "CANCELLED") throw new Error("VALIDATION: Order is not open."); };
+  await updateRow(token, "PURCHASE_ORDERS", "OrderID", String(data.orderId), { Status: "CANCELLED", Notes: `${order.Notes || ""} | Cancelled: ${data.notes}` }, checkStale);
+  await auditWrite(token, actor, "order.cancel", String(data.orderId), data);
+  return { status: "CANCELLED" };
+}
+
+/** Ported 1:1 from EntryChanges.gs processOrderEdit. */
+async function handleOrderEdit(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  entryChangeReason(data);
+  const order = listPurchaseOrders(ctx).find((o) => o.orderId === data.orderId);
+  if (!order || order.status === "CANCELLED") throw new Error("VALIDATION: Select an active purchase order.");
+  const expected = data.expected as Record<string, unknown> | undefined;
+  const staleAgainst = (qty: unknown, vendorId: unknown, notes: unknown, date: unknown, unitPrice: unknown) => {
+    if (!expected) return true;
+    return Number(expected.qty) !== Number(qty) || expected.vendorId !== vendorId ||
+      String(expected.notes || "") !== String(notes || "") ||
+      new Date(String(expected.date)).getTime() !== new Date(date as string | number).getTime() ||
+      (expected.unitPrice !== undefined && Number(expected.unitPrice || 0) !== Number(unitPrice || 0));
+  };
+  if (staleAgainst(order.qty, order.vendorId, order.notes, order.date, order.unitPrice)) throw new Error("STALE_ENTRY: This order changed. Refresh before editing.");
+  const product = getProduct(ctx, order.productId);
+  const qty = positiveQuantity(data.qty, product, false);
+  if (qty < order.received) throw new Error("VALIDATION: Ordered quantity cannot be less than the quantity already received. Edit the receipt first.");
+  const vendor = String(data.vendorId || "");
+  if (!ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === vendor && isTruthy(v.Active))) throw new Error("VALIDATION: Select an active vendor.");
+  if (order.received > 0 && vendor !== order.vendorId) throw new Error("VALIDATION: A received order must keep its vendor. Correct its receipts first.");
+  const date = resolveTxnDate(data);
+  const notes = data.notes == null ? String(order.notes || "") : String(data.notes).trim();
+  const changes: Record<string, unknown> = { QtyOrdered: qty, VendorID: vendor, Date: dateToSerial(date), Notes: notes };
+  if (Object.prototype.hasOwnProperty.call(data, "unitPrice")) {
+    const price = data.unitPrice === "" ? "" : Number(data.unitPrice);
+    if (price !== "" && (!isFinite(price) || price < 0)) throw new Error("VALIDATION: Enter a valid unit price.");
+    changes.UnitPrice = price;
+  }
+  const checkStale = (fresh: Row) => {
+    if (staleAgainst(fresh.QtyOrdered, fresh.VendorID, fresh.Notes, serialToDate(fresh.Date).toISOString(), fresh.UnitPrice)) {
+      throw new Error("STALE_ENTRY: This order changed. Refresh before editing.");
+    }
+  };
+  await updateRow(token, "PURCHASE_ORDERS", "OrderID", String(order.orderId), changes, checkStale);
+  await auditWrite(token, actor, "order.edit", String(order.orderId), { before: order, qty, vendorId: vendor, date, reason: data.reason });
+  return { orderId: order.orderId };
+}
+
+/** Ported 1:1 from EntryChanges.gs processOrderDelete -- delegates to order.cancel, same as the source (no separate audit entry). */
+async function handleOrderDelete(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const reason = entryChangeReason(data);
+  const order = listPurchaseOrders(ctx).find((o) => o.orderId === data.orderId);
+  if (!order || order.status === "CANCELLED") throw new Error("VALIDATION: This order is already deleted or cancelled.");
+  if (order.received > 0) throw new Error("VALIDATION: Delete or correct the receipts before deleting a received order.");
+  return handleOrderCancel(token, actor, ctx, { orderId: data.orderId, notes: `Deleted: ${reason}` });
+}
+
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -317,6 +468,10 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "product.editUnit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.delete": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.restore": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "order.create": ["PurchaseCoordinator", "Admin"],
+  "order.cancel": ["PurchaseCoordinator", "Admin"],
+  "order.edit": ["PurchaseCoordinator", "Admin"],
+  "order.delete": ["PurchaseCoordinator", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -342,6 +497,10 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "product.editUnit": result = await handleProductEditUnit(token, actor, ctx, data); break;
       case "product.delete": result = await handleProductDelete(token, actor, ctx, data); break;
       case "product.restore": result = await handleProductRestore(token, actor, ctx, data); break;
+      case "order.create": result = await handleOrderCreate(token, actor, ctx, data); break;
+      case "order.cancel": result = await handleOrderCancel(token, actor, ctx, data); break;
+      case "order.edit": result = await handleOrderEdit(token, actor, ctx, data); break;
+      case "order.delete": result = await handleOrderDelete(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;
