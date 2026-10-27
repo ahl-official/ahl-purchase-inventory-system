@@ -127,6 +127,11 @@ export function serialToDate(serial: unknown): Date {
 }
 export function serialToIso(serial: unknown): string {
   if (serial === "" || serial === null || serial === undefined) return "";
+  if (serial instanceof Date) return serial.toISOString();
+  if (typeof serial === "string" && isNaN(Number(serial))) {
+    const d = new Date(serial);
+    return isNaN(d.getTime()) ? "" : d.toISOString();
+  }
   const n = Number(serial);
   return isFinite(n) ? serialToDate(n).toISOString() : "";
 }
