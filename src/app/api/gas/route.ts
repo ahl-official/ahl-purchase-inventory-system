@@ -116,6 +116,7 @@ export async function POST(request: Request) {
 
   // actor comes from the session, never from the request body.
   const actor = session.user.email;
+  console.log(`[POST /api/gas] action=${action} actor=${actor}`);
 
   // Reads only: try Sheets directly first (no Apps Script round trip -- the slow part).
   // Any failure here (missing env, quota, a bug) falls straight back to the proven
@@ -125,6 +126,7 @@ export async function POST(request: Request) {
       const data_ = await readDirect(action, actor, (data as Record<string, unknown>) ?? {});
       return NextResponse.json({ ok: true, data: data_ }, { status: 200 });
     } catch (err) {
+      console.error(`[POST /api/gas] directRead failed for ${action}:`, err);
       const raw = err instanceof Error ? err.message : String(err);
       if (!raw.startsWith("DIRECT_READ_UNAVAILABLE")) {
         // A real business rejection (e.g. FORBIDDEN, VALIDATION) -- report it as-is,
@@ -144,6 +146,7 @@ export async function POST(request: Request) {
       const data_ = await writeDirect(action, actor, (data as Record<string, unknown>) ?? {});
       return NextResponse.json({ ok: true, data: data_ }, { status: 200 });
     } catch (err) {
+      console.error(`[POST /api/gas] directWrite failed for ${action}:`, err);
       const raw = err instanceof Error ? err.message : String(err);
       if (!raw.startsWith("DIRECT_WRITE_UNAVAILABLE")) {
         return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
@@ -152,11 +155,15 @@ export async function POST(request: Request) {
     }
   }
 
+  console.log(`[POST /api/gas] calling Apps Script for ${action}`);
   const result = await callAppsScript({
     action,
     actor,
     data: data ?? {},
   });
+  if (!result.ok) {
+    console.error(`[POST /api/gas] callAppsScript failed for ${action}:`, result);
+  }
 
   if (action === "stock.receiveOrders" && !result.ok && result.error === "UNKNOWN_ACTION") {
     return NextResponse.json({ ...result, message: "Order receiving needs the updated Apps Script backend. Ask the administrator to deploy it, then try again." }, { status: 200 });
