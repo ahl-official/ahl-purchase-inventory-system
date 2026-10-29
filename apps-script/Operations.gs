@@ -24,7 +24,7 @@ function getCatalogue(options) {
     }),
     // Explicit whitelist: never expose login or password fields.
     people: readAll('PEOPLE').filter(function (r) { return isTruthy(r.Active); }).map(function (r) { return { id:r.UserID, name:r.Name, role:appRole(r.Role) || r.Role, locationId:r.LocationID }; }),
-    categories:list('CATEGORY'), vendors:list('VENDOR'), locations:list('LOCATION'), receivers:list('RECEIVER'),
+    categories:list('CATEGORY'), vendors:list('VENDOR'), locations:list('LOCATION'), receivers:list('RECEIVER'), recipients:list('RECIPIENT'),
     headOfficeLocationId:getConfig('HeadOfficeLocationID','LOC-01'), salonFloorLocationId:getConfig('SalonFloorLocationID','LOC-02'), dispatchLocationId:getConfig('DispatchLocationID','LOC-05'),
     approvalThreshold:getConfigNumber('ApprovalThreshold',5000)
   };
@@ -110,12 +110,12 @@ function processListAdd(payload) {
   requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
   var r = payload.data || {};
   var type = String(r.type || '');
-  if (type !== 'VENDOR' && type !== 'RECEIVER') throw new Error('VALIDATION: Unsupported list.');
+  if (type !== 'VENDOR' && type !== 'RECEIVER' && type !== 'RECIPIENT') throw new Error('VALIDATION: Unsupported list.');
   var name = String(r.name || '').trim();
   if (name.length < 2) throw new Error('VALIDATION: Enter a name.');
   var existing = readAll('LISTS').filter(function (v) { return v.Type === type && isTruthy(v.Active) && String(v.Name || '').trim().toLowerCase() === name.toLowerCase(); })[0];
   if (existing) return {id:existing.Code, name:existing.Name};
-  var id = nextId(type === 'VENDOR' ? 'VND' : 'RCV');
+  var id = nextId(type === 'VENDOR' ? 'VND' : type === 'RECEIVER' ? 'RCV' : 'RCP');
   appendRecord('LISTS',{Type:type, Code:id, Name:name, Extra:'', Active:true});
   audit(payload.actor,'list.add',id,{type:type, name:name});
   return {id:id, name:name};
@@ -161,7 +161,7 @@ function processStockAdjustment(payload) {
   if(!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
   var loc=openingLocationForActor(payload.actor,r.locationId),qty=positiveQuantity(r.qty,p,false);
   if(!String(r.notes || '').trim()) throw new Error('VALIDATION: Record the reason.');
-  if(['RETURN','DAMAGE','COUNT_IN','COUNT_OUT'].indexOf(r.kind)<0) throw new Error('VALIDATION: Select a correction type.');
+  if(['RETURN','DAMAGE','COUNT_IN','COUNT_OUT','DISTRIBUTION'].indexOf(r.kind)<0) throw new Error('VALIDATION: Select a correction type.');
   if(/^COUNT_/.test(r.kind) && role!=='Admin') throw new Error('FORBIDDEN: Only management can adjust a physical count.');
   var direction=r.kind==='RETURN' || r.kind==='COUNT_IN' ? 1:-1;
   if(direction<0 && qty>computeAvailableBalance(r.productId,loc)) throw new Error('INSUFFICIENT_STOCK: Correction exceeds available stock.');
@@ -171,8 +171,21 @@ function processStockAdjustment(payload) {
     var returned=readAll('LEDGER').filter(function(l){return l.Type==='RETURN' && l.PORef===r.sourceTxnId && l.Status!=='VOID';}).reduce(function(s,l){return s+Number(l.QtyBase);},0);
     if(returned+qty>Number(source.QtyBase)) throw new Error('VALIDATION: Return exceeds the quantity originally issued.');
   }
+  // DISTRIBUTION: stock given to someone outside the studio network (Marketing, a doctor, a one-off
+  // recipient) -- a one-sided deduction, not a two-sided handover, since there is no second location
+  // to recount and confirm it at, and it should never read as a "transfer" in city-based reporting.
+  var recipientName='';
+  if(r.kind==='DISTRIBUTION') {
+    var recipient=readAll('LISTS').filter(function(v){return v.Type==='RECIPIENT' && v.Code===r.recipientId && isTruthy(v.Active);})[0];
+    if(!recipient) throw new Error('VALIDATION: Select who received this.');
+    recipientName=recipient.Name;
+  }
   var id=nextId('TXN');
-  appendRecord('LEDGER',{TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:r.notes});
+  var notes=r.kind==='DISTRIBUTION' ? ('Given to: '+recipientName+(r.notes ? ' | '+r.notes : '')) : r.notes;
+  if(r.kind==='DISTRIBUTION') ensureColumn('LEDGER','RecipientID');
+  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:notes};
+  if(r.kind==='DISTRIBUTION') record.RecipientID=r.recipientId;
+  appendRecord('LEDGER',record);
   audit(payload.actor,'stock.adjust',id,r);
   return {txnId:id};
 }

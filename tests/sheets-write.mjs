@@ -751,6 +751,37 @@ await (async () => {
   await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, kind: 'RETURN', sourceTxnId: 'ISSUE1', notes: 'Too much', operationId: opId() }), /VALIDATION/);
 })();
 await (async () => {
+  // DISTRIBUTION: stock given to a recipient outside the studio network -- a one-sided deduction,
+  // open to the same roles as DAMAGE/RETURN (not Admin-only like COUNT_*), and it adds the
+  // RecipientID column on first use via ensureColumn.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  tabs.LISTS.rows.push(rowFor(tabs, 'LISTS', { Type: 'RECIPIENT', Code: 'RCP-1', Name: 'Marketing Team', Active: true }));
+  assert.equal(tabs.LEDGER.headers.includes('RecipientID'), false); // not present until first used
+  const result = await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 2, kind: 'DISTRIBUTION', recipientId: 'RCP-1', notes: 'For the photoshoot', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  assert.equal(tabs.LEDGER.headers.includes('RecipientID'), true);
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'DISTRIBUTION');
+  assert.equal(row[h.indexOf('Direction')], -1);
+  assert.equal(row[h.indexOf('RecipientID')], 'RCP-1');
+  assert.match(String(row[h.indexOf('Notes')]), /Given to: Marketing Team \| For the photoshoot/);
+})();
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'DISTRIBUTION', recipientId: 'RCP-NOPE', notes: 'x', operationId: opId() }), /VALIDATION/);
+})();
+
+// ---- list.add (RECIPIENT) ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('list.add', 'purchase@ahl.com', { type: 'RECIPIENT', name: 'Dr. Mehta', operationId: opId() });
+  assert.match(result.id, /^RCP-/);
+  assert.equal(result.name, 'Dr. Mehta');
+  const h = tabs.LISTS.headers;
+  assert.equal(tabs.LISTS.rows.find((r) => r[h.indexOf('Code')] === result.id)[h.indexOf('Type')], 'RECIPIENT');
+})();
+await (async () => {
   const { writeDirect } = fixture();
   await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'DAMAGE', operationId: opId() }), /VALIDATION/); // no reason given
 })();
@@ -944,4 +975,4 @@ await (async () => {
   assert.equal(tabs.PRODUCTS.rows[0][ph.indexOf('Cost')], 450 / 500); // qtyBase = 1 * ConvFactor 500
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes), and the photo-attached fallback (Drive uploads from the service account are reverted to Apps Script pending a storage-quota fix).');
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard, and the new DISTRIBUTION kind with its on-first-use RecipientID column), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes), the photo-attached fallback (Drive uploads from the service account are reverted to Apps Script pending a storage-quota fix), and list.add RECIPIENT entries.');

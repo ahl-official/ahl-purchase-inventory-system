@@ -111,6 +111,16 @@ async function appendRow(token: string, sheetName: string, record: Record<string
   });
 }
 
+/** Ported 1:1 from Db.gs ensureColumn: appends a header cell if the column doesn't exist yet. */
+async function ensureColumn(token: string, sheetName: string, column: string): Promise<void> {
+  const { headers } = await readTabRaw(token, sheetName);
+  if (headers.includes(column)) return;
+  const colIndex = headers.length + 1;
+  await sheetsFetch(token, `/values/${encodeURIComponent(sheetName)}!${colLetter(colIndex)}1?valueInputOption=RAW`, {
+    method: "PUT", body: JSON.stringify({ values: [[column]] }),
+  });
+}
+
 /**
  * Ported 1:1 from Db.gs updateRecordFields, but re-reads the tab fresh first (see file
  * header). `verify`, when given, runs against that fresh row before writing -- a
@@ -182,12 +192,12 @@ async function failOperation(token: string, operationId: string, error: { error:
 /** Ported 1:1 from Operations.gs processListAdd. */
 async function handleListAdd(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
   const type = String(data.type || "");
-  if (type !== "VENDOR" && type !== "RECEIVER") throw new Error("VALIDATION: Unsupported list.");
+  if (type !== "VENDOR" && type !== "RECEIVER" && type !== "RECIPIENT") throw new Error("VALIDATION: Unsupported list.");
   const name = String(data.name || "").trim();
   if (name.length < 2) throw new Error("VALIDATION: Enter a name.");
   const existing = ctx.lists.find((v) => v.Type === type && isTruthy(v.Active) && String(v.Name || "").trim().toLowerCase() === name.toLowerCase());
   if (existing) return { id: existing.Code, name: existing.Name };
-  const id = nextId(type === "VENDOR" ? "VND" : "RCV");
+  const id = nextId(type === "VENDOR" ? "VND" : type === "RECEIVER" ? "RCV" : "RCP");
   await appendRow(token, "LISTS", { Type: type, Code: id, Name: name, Extra: "", Active: true });
   await auditWrite(token, actor, "list.add", id, { type, name });
   return { id, name };
@@ -850,7 +860,7 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
   const qty = positiveQuantity(data.qty, product, false);
   if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Record the reason.");
   const kind = String(data.kind || "");
-  if (!["RETURN", "DAMAGE", "COUNT_IN", "COUNT_OUT"].includes(kind)) throw new Error("VALIDATION: Select a correction type.");
+  if (!["RETURN", "DAMAGE", "COUNT_IN", "COUNT_OUT", "DISTRIBUTION"].includes(kind)) throw new Error("VALIDATION: Select a correction type.");
   if (/^COUNT_/.test(kind) && role !== "Admin") throw new Error("FORBIDDEN: Only management can adjust a physical count.");
   const direction = kind === "RETURN" || kind === "COUNT_IN" ? 1 : -1;
   if (direction < 0 && qty > availableBalance(ctx, data.productId, loc)) throw new Error("INSUFFICIENT_STOCK: Correction exceeds available stock.");
@@ -862,11 +872,27 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
     const returned = ctx.ledger.filter((l) => l.Type === "RETURN" && l.PORef === data.sourceTxnId && l.Status !== "VOID").reduce((s, l) => s + Number(l.QtyBase), 0);
     if (returned + qty > Number(source.QtyBase)) throw new Error("VALIDATION: Return exceeds the quantity originally issued.");
   }
+  // DISTRIBUTION: stock given to someone outside the studio network (Marketing, a doctor, a
+  // one-off recipient) -- a one-sided deduction, not a two-sided handover, since there is no
+  // second location to recount and confirm it at, and it should never read as a "transfer" in
+  // city-based reporting.
+  let recipientName = "";
+  if (kind === "DISTRIBUTION") {
+    const recipient = ctx.lists.find((v) => v.Type === "RECIPIENT" && v.Code === data.recipientId && isTruthy(v.Active));
+    if (!recipient) throw new Error("VALIDATION: Select who received this.");
+    recipientName = String(recipient.Name);
+  }
   const id = nextId("TXN");
-  await appendRow(token, "LEDGER", {
+  const record: Record<string, unknown> = {
     TxnID: id, Date: dateToSerial(resolveTxnDate(data)), Type: kind, Direction: direction, ProductID: data.productId,
-    Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc, PORef: data.sourceTxnId || "", Actor: actor, Status: "POSTED", Notes: data.notes,
-  });
+    Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc, PORef: data.sourceTxnId || "", Actor: actor, Status: "POSTED",
+    Notes: kind === "DISTRIBUTION" ? `Given to: ${recipientName}${data.notes ? ` | ${data.notes}` : ""}` : data.notes,
+  };
+  if (kind === "DISTRIBUTION") {
+    await ensureColumn(token, "LEDGER", "RecipientID");
+    record.RecipientID = data.recipientId;
+  }
+  await appendRow(token, "LEDGER", record);
   await auditWrite(token, actor, "stock.adjust", id, data);
   return { txnId: id };
 }
