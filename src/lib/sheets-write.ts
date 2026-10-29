@@ -30,7 +30,6 @@ import {
   computeBalanceFromRows, computePendingHandoverOutFromRows,
   type Ctx, type Row,
 } from "./sheets-direct";
-import { saveBillPhoto, type BillPhotoInput, type SavedBillPhoto } from "./drive-write";
 import { historyKey, type MovementHistory } from "./movement-history";
 
 // ---------------------------------------------------------------- auth (write scope, own cache)
@@ -1036,29 +1035,26 @@ async function handleHandoverCancel(token: string, actor: string, ctx: Ctx, data
   return { status: "CANCELLED" };
 }
 
-function hasPhoto(v: unknown): v is BillPhotoInput {
-  return !!(v && typeof v === "object" && (v as Record<string, unknown>).base64);
+/**
+ * Drive uploads from the service account hit Google's "Service Accounts do not have storage
+ * quota" error -- a service account gets 0 bytes of personal Drive storage, and creating a
+ * file in a folder merely shared with it (not a Shared Drive) still counts against that 0,
+ * regardless of Editor access. Confirmed in production (2026-10-29). Until the folder moves to
+ * a Shared Drive or the service account gets domain-wide delegation to act as a real user, a
+ * photo-attached receipt falls back to Apps Script (which runs under the real deploying
+ * account's quota), same as before Drive was ever ported. This check runs before any
+ * read/write, so it's safe to throw even after beginOperation has marked the operation
+ * STARTED: nothing has been written yet, and Code.gs's own OPERATIONS handling allows a FAILED
+ * operation id to be retried.
+ */
+function assertNoPhotoAttached(data: Record<string, unknown>) {
+  const hasPhoto = (v: unknown) => !!(v && typeof v === "object" && (v as Record<string, unknown>).base64);
+  if (hasPhoto(data.photo) || hasPhoto(data.productPhoto)) throw new Error("DIRECT_WRITE_UNAVAILABLE: Action not yet ported.");
 }
 
-/** Ported 1:1 from Drive.gs redactForAudit: a base64 image is far too large for an AUDIT cell. */
-function redactForAudit(data: Record<string, unknown>): Record<string, unknown> {
-  const copy: Record<string, unknown> = {};
-  for (const key of Object.keys(data)) {
-    const value = data[key];
-    copy[key] = hasPhoto(value)
-      ? { fileName: value.fileName || "", mimeType: value.mimeType || "", omitted: "base64 stripped for audit" }
-      : value;
-  }
-  return copy;
-}
-
-/** The BillPublicLink SETTING row stands in for Apps Script's BILL_PUBLIC_LINK script property, which this code can't read. */
-function billPublicLink(ctx: Ctx): boolean {
-  return getConfig(ctx, "BillPublicLink", "No") === "Yes";
-}
-
-/** Records a delivery and files its bill photo. Ported 1:1 from Ledger.gs processStockReceive. */
+/** Records a delivery. Ported 1:1 from Ledger.gs processStockReceive (the no-photo path -- see assertNoPhotoAttached). */
 async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>): Promise<unknown> {
+  assertNoPhotoAttached(data);
   if (data.lines) return handleStockReceiveLines(token, actor, ctx, data);
   const headOfficeLocationId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
 
@@ -1089,18 +1085,6 @@ async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: 
   }
 
   const txnId = nextId("TXN");
-
-  // Drive first. If the bill cannot be stored, no stock row is written.
-  const publicLink = billPublicLink(ctx);
-  let bill: SavedBillPhoto | null = null;
-  if (hasPhoto(data.photo)) {
-    bill = await saveBillPhoto(data.photo, { kind: "BILL", txnId, actor, vendorId: data.vendorId as string, poId: data.poId as string }, publicLink);
-  }
-  let productPhoto: SavedBillPhoto | null = null;
-  if (hasPhoto(data.productPhoto)) {
-    productPhoto = await saveBillPhoto(data.productPhoto, { kind: "PRODUCT", txnId, actor, vendorId: data.vendorId as string, poId: data.poId as string }, publicLink);
-  }
-
   // Deliveries arrive in the purchase unit; the ledger stores issue units.
   const qtyBase = qty * (Number(product.ConvFactor) || 1);
   const amount = Number(data.amount) || qtyBase * (Number(product.Cost) || 0);
@@ -1108,7 +1092,7 @@ async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: 
     TxnID: txnId, ReceiptID: txnId, Date: dateToSerial(resolveTxnDate(data)), Type: "RECEIPT", Direction: 1,
     ProductID: data.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
     LocationID: locationId, CategoryID: data.categoryId || "", VendorID: data.vendorId || "", PORef: data.poId || "",
-    InvoiceNo: data.invoiceNo || "", Amount: amount, BillPhotoURL: bill?.url || "", ProductPhotoURL: productPhoto?.url || "",
+    InvoiceNo: data.invoiceNo || "", Amount: amount, BillPhotoURL: "", ProductPhotoURL: "",
     ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
     Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : ""].filter(Boolean).join(" | "),
   });
@@ -1117,12 +1101,13 @@ async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: 
   if (data.amount && qtyBase > 0) {
     await updateRow(token, "PRODUCTS", "ProductID", String(data.productId), { Cost: amount / qtyBase });
   }
-  await auditWrite(token, actor, "stock.receive", txnId, redactForAudit(data));
-  return { txnId, qtyBase, uom: product.IssueUOM, billUrl: bill?.url || "", billFileId: bill?.fileId || "", billViewUrl: bill?.downloadUrl || "", productPhotoUrl: productPhoto?.url || "" };
+  await auditWrite(token, actor, "stock.receive", txnId, data);
+  return { txnId, qtyBase, uom: product.IssueUOM, billUrl: "", billFileId: "", billViewUrl: "", productPhotoUrl: "" };
 }
 
-/** One vendor bill, many products. One photo, one ledger row per product. Ported 1:1 from Ledger.gs processStockReceiveLines. */
+/** One vendor bill, many products. Ported 1:1 from Ledger.gs processStockReceiveLines (the no-photo path -- see assertNoPhotoAttached). */
 async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  assertNoPhotoAttached(data);
   const headOfficeLocationId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
   if (data.poId) throw new Error("VALIDATION: A multi-product bill cannot be tied to one order.");
   if (!data.vendorId || !ctx.lists.some((v) => v.Type === "VENDOR" && v.Code === data.vendorId && isTruthy(v.Active))) throw new Error("VALIDATION: Select a vendor.");
@@ -1173,11 +1158,6 @@ async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, d
   if (discounted !== "" && (!isFinite(discounted) || discounted < 0)) throw new Error("VALIDATION: Enter a valid discounted price.");
 
   const firstTxn = nextId("TXN");
-  let bill: SavedBillPhoto | null = null;
-  if (hasPhoto(data.photo)) {
-    bill = await saveBillPhoto(data.photo, { kind: "BILL", txnId: firstTxn, actor, vendorId: data.vendorId as string }, billPublicLink(ctx));
-  }
-
   const now = dateToSerial(resolveTxnDate(data));
   const rows = prepared.map((line, i) => ({
     TxnID: i === 0 ? firstTxn : nextId("TXN"), ReceiptID: firstTxn, Date: now, Type: "RECEIPT", Direction: 1,
@@ -1185,15 +1165,15 @@ async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, d
     LocationID: line.locationId, PORef: line.poId, VendorID: data.vendorId, InvoiceNo: data.invoiceNo || "",
     Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount,
     GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
-    BillPhotoURL: bill?.url || "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
+    BillPhotoURL: "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
     Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : "", gst === "" ? "" : `GST ${gst}% ₹${billGst}`, discounted === "" ? "" : `Discounted price ₹${discounted}`].filter(Boolean).join(" | "),
   }));
   for (const row of rows) await appendRow(token, "LEDGER", row);
   for (const line of prepared) {
     if (line.hasAmount && line.qtyBase > 0) await updateRow(token, "PRODUCTS", "ProductID", String(line.productId), { Cost: line.amount / line.qtyBase });
   }
-  await auditWrite(token, actor, "stock.receive", firstTxn, redactForAudit(data));
-  return { txnIds: rows.map((r) => r.TxnID), billUrl: bill?.url || "" };
+  await auditWrite(token, actor, "stock.receive", firstTxn, data);
+  return { txnIds: rows.map((r) => r.TxnID), billUrl: "" };
 }
 
 /** Code.gs's stock.receiveOrders dispatch requires every line to carry a poId before ever reaching processStockReceiveLines. */

@@ -888,55 +888,20 @@ await (async () => {
   const { writeDirect } = fixture({ role: 'ProductDistributor' });
   await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', locationId: 'LOC-03', operationId: opId() }), /FORBIDDEN/);
 })();
-// ---- stock.receive with a bill/product photo (Drive) ----
-const fakeJpeg = Buffer.from('not a real jpeg, just test bytes').toString('base64');
 await (async () => {
-  const { writeDirect, tabs, mock } = fixture();
-  const result = await writeDirect('stock.receive', 'purchase@ahl.com', {
-    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, operationId: opId(),
-  });
-  assert.match(result.billUrl, /^https:\/\/drive\.google\.com\/file\/d\//);
-  const h = tabs.LEDGER.headers;
-  assert.equal(tabs.LEDGER.rows[0][h.indexOf('BillPhotoURL')], result.billUrl);
-  assert.equal(mock.calls.driveUpload.length, 1);
-  assert.equal(mock.calls.drivePermission.length, 0); // BillPublicLink defaults to No
-})();
-await (async () => {
-  // BillPublicLink=Yes (a LISTS SETTING row) makes the uploaded file link-shareable.
-  const { writeDirect, tabs, mock } = fixture();
-  tabs.LISTS.rows.push(rowFor(tabs, 'LISTS', { Type: 'SETTING', Code: 'BillPublicLink', Name: 'Yes', Active: true }));
-  await writeDirect('stock.receive', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, operationId: opId() });
-  assert.equal(mock.calls.drivePermission.length, 1);
-})();
-await (async () => {
-  // A second, distinct product photo is stored separately from the bill photo.
-  const { writeDirect, tabs, mock } = fixture();
-  const result = await writeDirect('stock.receive', 'purchase@ahl.com', {
-    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1',
-    photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, productPhoto: { base64: fakeJpeg, mimeType: 'image/png' }, operationId: opId(),
-  });
-  assert.notEqual(result.billUrl, result.productPhotoUrl);
-  const h = tabs.LEDGER.headers;
-  assert.notEqual(tabs.LEDGER.rows[0][h.indexOf('BillPhotoURL')], tabs.LEDGER.rows[0][h.indexOf('ProductPhotoURL')]);
-  assert.equal(mock.calls.driveUpload.length, 2);
+  // A request that attaches a bill or product photo falls back to Apps Script -- Drive uploads
+  // from the service account hit a real "no storage quota" error in production (2026-10-29),
+  // so this was reverted from an earlier attempt at porting the photo path too.
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', {
+    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: 'abc123' }, operationId: opId(),
+  }), /DIRECT_WRITE_UNAVAILABLE/);
 })();
 await (async () => {
   const { writeDirect } = fixture();
   await assert.rejects(() => writeDirect('stock.receive', 'purchase@ahl.com', {
-    productId: 'PRD-0001', qty: 1, vendorId: 'VND-1', photo: { base64: fakeJpeg, mimeType: 'application/pdf' }, operationId: opId(),
-  }), /BILL_PHOTO_TYPE/);
-})();
-await (async () => {
-  // A multi-product bill's one shared photo lands on every line's row.
-  const { writeDirect, tabs } = fixture();
-  await writeDirect('stock.receive', 'purchase@ahl.com', {
-    vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', qty: 1 }, { productId: 'PRD-0002', qty: 1 }],
-    photo: { base64: fakeJpeg, mimeType: 'image/jpeg' }, operationId: opId(),
-  });
-  const h = tabs.LEDGER.headers;
-  const urls = tabs.LEDGER.rows.map((r) => r[h.indexOf('BillPhotoURL')]);
-  assert.equal(new Set(urls).size, 1);
-  assert.notEqual(urls[0], '');
+    vendorId: 'VND-1', lines: [{ productId: 'PRD-0001', qty: 1 }], productPhoto: { base64: 'abc123' }, operationId: opId(),
+  }), /DIRECT_WRITE_UNAVAILABLE/);
 })();
 
 // ---- stock.receiveOrders / multi-line stock.receive ----
@@ -979,4 +944,4 @@ await (async () => {
   assert.equal(tabs.PRODUCTS.rows[0][ph.indexOf('Cost')], 450 / 500); // qtyBase = 1 * ConvFactor 500
 })();
 
-console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes), and bill/product photo storage via the mocked Drive API (upload, link-sharing opt-in, mime-type guard, shared multi-line photo).');
+console.log('sheets-write.mjs checks passed: idempotent writes, dedupe, role check, validation, unported-action fallback, the product-management batch (create/setVendor/editUnit/delete/restore), the order-lifecycle batch (create incl. multi-line + request linking/cancel/edit/delete), the receipt edit/delete batch (invoice grouping, re-voided-line refusal, stock/PO guards), the purchase request/approval batch (single + multi-line request, approve/reject, approveMany all-or-nothing), the opening-stock batch (submit dedupe/stock guard, approve/reject with the single-ledger-post guard), stock.issue/stock.retailSale/stock.adjust (balance guards, own-location gate, Admin-only COUNT_*, RETURN-against-issue guard), the handover batch (handover/confirm/cancel, mismatch handling, receiver/sender-only guards, no-adjacency-required pair matching), stock.receive/stock.receiveOrders (order-linked + unordered + multi-line, GST/discount notes), and the photo-attached fallback (Drive uploads from the service account are reverted to Apps Script pending a storage-quota fix).');
