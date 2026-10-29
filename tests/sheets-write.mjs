@@ -30,13 +30,38 @@ const FAKE_PRIVATE_KEY = privateKey.export({ type: 'pkcs8', format: 'pem' });
 // An in-memory spreadsheet: { TAB: { headers: string[], rows: unknown[][] } }, plus a tiny
 // in-memory Drive (folders + uploaded files) for drive-write.ts's calls.
 function sheetsMock(tabs) {
-  const calls = { append: [], update: [], driveUpload: [], drivePermission: [] };
+  const calls = { append: [], update: [], driveUpload: [], drivePermission: [], gridGrow: [] };
   const drive = { folders: {}, nextId: 1 };
+  // Each tab's simulated grid starts exactly as wide as its current headers -- the same real
+  // shape that caught a production bug (LEDGER's live grid was capped at 26/Z columns, and
+  // ensureColumn tried to write a 27th header cell straight into AA1 without growing the grid
+  // first). Any ensureColumn call that needs a new column must grow the grid, every time.
+  const grid = {};
+  let nextSheetId = 1;
+  function gridFor(name) {
+    if (!grid[name]) grid[name] = { sheetId: nextSheetId++, columnCount: (tabs[name] || { headers: [] }).headers.length };
+    return grid[name];
+  }
   function tabName(url) { return decodeURIComponent(url.match(/\/values\/([^!]+)!/)[1]); }
   async function fetchImpl(url, init) {
     const u = String(url);
     if (u.includes('oauth2.googleapis.com')) {
       return { ok: true, status: 200, json: async () => ({ access_token: 'TEST_TOKEN', expires_in: 3600 }) };
+    }
+    if (u.includes(':batchUpdate')) {
+      const body = JSON.parse(init.body);
+      for (const req of body.requests) {
+        if (req.appendDimension) {
+          const entry = Object.values(grid).find((g) => g.sheetId === req.appendDimension.sheetId);
+          if (entry) entry.columnCount += req.appendDimension.length;
+          calls.gridGrow.push(req.appendDimension);
+        }
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    if (u.includes('fields=sheets.properties')) {
+      const sheets = Object.keys(tabs).map((name) => { const g = gridFor(name); return { properties: { title: name, sheetId: g.sheetId, gridProperties: { columnCount: g.columnCount } } }; });
+      return { ok: true, status: 200, json: async () => ({ sheets }) };
     }
     if (u.includes('/upload/drive/v3/files')) {
       const id = `FILE-${drive.nextId++}`;
@@ -754,13 +779,16 @@ await (async () => {
   // DISTRIBUTION: stock given to a recipient outside the studio network -- a one-sided deduction,
   // open to the same roles as DAMAGE/RETURN (not Admin-only like COUNT_*), and it adds the
   // RecipientID column on first use via ensureColumn.
-  const { writeDirect, tabs } = fixture();
+  const { writeDirect, tabs, mock } = fixture();
   tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
   tabs.LISTS.rows.push(rowFor(tabs, 'LISTS', { Type: 'RECIPIENT', Code: 'RCP-1', Name: 'Marketing Team', Active: true }));
   assert.equal(tabs.LEDGER.headers.includes('RecipientID'), false); // not present until first used
   const result = await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 2, kind: 'DISTRIBUTION', recipientId: 'RCP-1', notes: 'For the photoshoot', operationId: opId() });
   assert.match(result.txnId, /^TXN-/);
   assert.equal(tabs.LEDGER.headers.includes('RecipientID'), true);
+  // The LEDGER tab's simulated grid started exactly 26 columns wide (see sheetsMock) -- adding a
+  // 27th header cell must grow the grid first, not just write past its edge.
+  assert.equal(mock.calls.gridGrow.length, 1);
   const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'DISTRIBUTION');
   assert.equal(row[h.indexOf('Direction')], -1);
   assert.equal(row[h.indexOf('RecipientID')], 'RCP-1');

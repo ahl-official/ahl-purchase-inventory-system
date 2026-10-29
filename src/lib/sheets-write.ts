@@ -111,11 +111,36 @@ async function appendRow(token: string, sheetName: string, record: Record<string
   });
 }
 
-/** Ported 1:1 from Db.gs ensureColumn: appends a header cell if the column doesn't exist yet. */
+/** sheetId (gid) + current grid column count for a tab, read fresh every call -- ensureColumn only grows a grid, never shrinks it, so a stale cached columnCount is never trusted. */
+async function getSheetGrid(token: string, sheetName: string): Promise<{ sheetId: number; columnCount: number }> {
+  const spreadsheetId = requireEnv("GOOGLE_SHEET_ID");
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`, {
+    headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`SHEETS_API_ERROR: ${json.error?.message || res.status}`);
+  const sheet = (json.sheets || []).find((s: { properties: { title: string } }) => s.properties.title === sheetName);
+  if (!sheet) throw new Error(`SCHEMA_ERROR: No tab named '${sheetName}'.`);
+  return { sheetId: sheet.properties.sheetId, columnCount: sheet.properties.gridProperties.columnCount };
+}
+
+/**
+ * Ported 1:1 from Db.gs ensureColumn: appends a header cell if the column doesn't exist yet.
+ * A tab's grid can be narrower than where the next header cell lands (Sheets tabs often start
+ * capped at 26/Z columns) -- appendDimension grows the grid first when needed. It only adds
+ * columns at the end, never resizes/truncates, so existing data is never at risk.
+ */
 async function ensureColumn(token: string, sheetName: string, column: string): Promise<void> {
   const { headers } = await readTabRaw(token, sheetName);
   if (headers.includes(column)) return;
   const colIndex = headers.length + 1;
+  const grid = await getSheetGrid(token, sheetName);
+  if (colIndex > grid.columnCount) {
+    await sheetsFetch(token, `:batchUpdate`, {
+      method: "POST",
+      body: JSON.stringify({ requests: [{ appendDimension: { sheetId: grid.sheetId, dimension: "COLUMNS", length: colIndex - grid.columnCount } }] }),
+    });
+  }
   await sheetsFetch(token, `/values/${encodeURIComponent(sheetName)}!${colLetter(colIndex)}1?valueInputOption=RAW`, {
     method: "PUT", body: JSON.stringify({ values: [[column]] }),
   });
