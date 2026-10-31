@@ -90,6 +90,7 @@ function doPost(e) {
         'product.delete':['PurchaseCoordinator','ProductDistributor','Admin'],
         'product.restore':['PurchaseCoordinator','ProductDistributor','Admin'],
         'list.add':['PurchaseCoordinator','ProductDistributor','Admin'],
+        'person.add':['PurchaseCoordinator','ProductDistributor','Admin'],
         'inventoryReport.read':['PurchaseCoordinator','Admin']
       };
       if(payload.action !== 'auth.login') {
@@ -134,6 +135,7 @@ function doPost(e) {
         case 'product.delete': result=processProductDelete(payload); break;
         case 'product.restore': result=processProductRestore(payload); break;
         case 'list.add': result=processListAdd(payload); break;
+        case 'person.add': result=processPersonAdd(payload); break;
         case 'inventoryReport.read': result=getInventoryReport(payload); break;
         case "auth.login":
           result = processAuthLogin(payload);

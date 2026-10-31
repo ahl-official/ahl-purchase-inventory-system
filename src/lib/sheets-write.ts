@@ -228,6 +228,19 @@ async function handleListAdd(token: string, actor: string, ctx: Ctx, data: Recor
   return { id, name };
 }
 
+/** Adds a technician as a PEOPLE row so they can be picked when issuing/selling stock, matching the "type Other" pattern used for vendors/receivers/recipients. Not a login account: no Email/PasswordHash, so it can't sign in. */
+async function handlePersonAdd(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const name = String(data.name || "").trim();
+  if (name.length < 2) throw new Error("VALIDATION: Enter a name.");
+  const existing = ctx.people.find((r) => isTruthy(r.Active) && String(r.Name || "").trim().toLowerCase() === name.toLowerCase());
+  if (existing) return { id: existing.UserID, name: existing.Name };
+  const id = nextId("TECH");
+  const locationId = String(data.locationId || actorLocation(ctx, actor) || "");
+  await appendRow(token, "PEOPLE", { UserID: id, Name: name, Role: "Technician", LocationID: locationId, Active: true });
+  await auditWrite(token, actor, "person.add", id, { name });
+  return { id, name };
+}
+
 /**
  * Ported 1:1 from Operations.gs processProductCreate, except: ProductID is a
  * sequential counter (PRD-0001, PRD-0002, ...), not a random id like every other
@@ -1236,11 +1249,12 @@ async function handleStockReceiveOrders(token: string, actor: string, ctx: Ctx, 
 
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "list.add": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "person.add": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.create": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.setVendor": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.editUnit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
@@ -1285,6 +1299,7 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
     let result: unknown;
     switch (action) {
       case "list.add": result = await handleListAdd(token, actor, ctx, data); break;
+      case "person.add": result = await handlePersonAdd(token, actor, ctx, data); break;
       case "product.create": result = await handleProductCreate(token, actor, ctx, data); break;
       case "product.setVendor": result = await handleProductSetVendor(token, actor, ctx, data); break;
       case "product.editUnit": result = await handleProductEditUnit(token, actor, ctx, data); break;

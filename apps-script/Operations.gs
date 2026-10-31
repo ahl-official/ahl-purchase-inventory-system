@@ -121,6 +121,20 @@ function processListAdd(payload) {
   return {id:id, name:name};
 }
 
+function processPersonAdd(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']);
+  var r = payload.data || {};
+  var name = String(r.name || '').trim();
+  if (name.length < 2) throw new Error('VALIDATION: Enter a name.');
+  var existing = readAll('PEOPLE').filter(function (v) { return isTruthy(v.Active) && String(v.Name || '').trim().toLowerCase() === name.toLowerCase(); })[0];
+  if (existing) return {id:existing.UserID, name:existing.Name};
+  var id = nextId('TECH');
+  var locationId = String(r.locationId || actorLocation(payload.actor) || '');
+  appendRecord('PEOPLE',{UserID:id, Name:name, Role:'Technician', LocationID:locationId, Active:true});
+  audit(payload.actor,'person.add',id,{name:name});
+  return {id:id, name:name};
+}
+
 function updateRecordFields(name, key, id, changes) {
   var t=table(name), rows=readAll(name), index=rows.findIndex(function(r){return String(r[key])===String(id);});
   if(index<0) throw new Error('NOT_FOUND: Record not found.');

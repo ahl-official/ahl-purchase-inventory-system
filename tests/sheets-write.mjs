@@ -814,6 +814,34 @@ await (async () => {
   await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'DAMAGE', operationId: opId() }), /VALIDATION/); // no reason given
 })();
 
+// ---- person.add (the "Other" technician on Issue stock / Retail sale) ----
+await (async () => {
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('person.add', 'purchase@ahl.com', { name: 'New Technician', locationId: 'LOC-02', operationId: opId() });
+  assert.match(result.id, /^TECH-/);
+  assert.equal(result.name, 'New Technician');
+  const h = tabs.PEOPLE.headers, row = tabs.PEOPLE.rows.find((r) => r[h.indexOf('UserID')] === result.id);
+  assert.equal(row[h.indexOf('Role')], 'Technician');
+  assert.equal(row[h.indexOf('LocationID')], 'LOC-02');
+  assert.equal(row[h.indexOf('Active')], true);
+  // Now usable right away as the technician on an Issue -- recipientUserId just needs an active PEOPLE row.
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  const issued = await writeDirect('stock.issue', 'purchase@ahl.com', { productId: 'PRD-0001', fromLocationId: 'LOC-01', splits: [{ qty: 1, recipientUserId: result.id, categoryId: 'CAT-1' }], operationId: opId() });
+  assert.match(issued.handoverId, /^HND-/);
+})();
+await (async () => {
+  // Case-insensitive dedupe against an existing active technician, same as vendors/receivers/recipients.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('person.add', 'purchase@ahl.com', { name: 'tech one', operationId: opId() });
+  assert.equal(result.id, 'U2');
+  const h = tabs.PEOPLE.headers;
+  assert.equal(tabs.PEOPLE.rows.filter((r) => String(r[h.indexOf('Name')]).toLowerCase() === 'tech one').length, 1);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('person.add', 'purchase@ahl.com', { name: 'A', operationId: opId() }), /VALIDATION/);
+})();
+
 // ---- stock.handover ----
 await (async () => {
   const { writeDirect, tabs } = fixture();

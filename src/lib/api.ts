@@ -34,6 +34,7 @@ export type AppsScriptAction =
   | "product.delete"
   | "product.restore"
   | "list.add"
+  | "person.add"
   | "inventoryReport.read"
   | "auth.login"
   | "stock.issue"

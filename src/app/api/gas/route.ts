@@ -53,6 +53,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "product.delete": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.restore": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "list.add": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "person.add": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "inventoryReport.read": ["PurchaseCoordinator", "Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
