@@ -24,7 +24,7 @@ function inventoryViewDefinitions(headers) {
   defs.HANDOVER_TRACKER={headers:['Date','Product Name','Qty','Unit','Destination','Receiver','Type','Status','Handover ID','Notes'],formulas:[filter(movement,[l('Type')+'="HANDOVER"',l('Direction')+'=1'])],dateColumns:[0]};
   defs.ISSUE_HISTORY={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,['('+l('Type')+'="ISSUE")+('+l('Type')+'="RETURN")+('+l('Type')+'="DAMAGE")'])],dateColumns:[0]};
   defs.REPORTS={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,[l('TxnID')+'<>""'])],dateColumns:[0]};
-  defs.PURCHASE_TRACKER={headers:['Order ID','Product Name','Vendor','Ordered','Received','Outstanding','Unit','Status','Date','Request ID'],formulas:[
+  defs.PURCHASE_TRACKER={headers:['Order ID','Product Name','Vendor','Ordered','Received','Outstanding','Unit','Status','Date','Request ID','Invoice No','Amount (Rs)','GST (Rs)','Total (Rs)'],formulas:[
     '=IFNA(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),"")',
     array('IF(A2:A="","",'+lookup(lookup('A2:A','PURCHASE_ORDERS','OrderID','ProductID'),'PRODUCTS','ProductID','Name')+')'),
     array('IF(A2:A="","",'+lookup(lookup('A2:A','PURCHASE_ORDERS','OrderID','VendorID'),'LISTS','Code','Name')+')'),
@@ -34,7 +34,13 @@ function inventoryViewDefinitions(headers) {
     array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','UOM')+')'),
     array('IF(A2:A="","",IF('+lookup('A2:A','PURCHASE_ORDERS','OrderID','Status')+'="CANCELLED","CANCELLED",IF(E2:E>=D2:D,"RECEIVED",IF(E2:E>0,"PARTIAL","ORDERED")))))'),
     array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','Date')+')'),
-    array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','RequestID')+')')
+    array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','RequestID')+')'),
+    // The vendor's bill: an order can be received across more than one invoice, so every distinct
+    // invoice number recorded against it is joined together rather than picking just one.
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),""))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")+SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))'
   ],dateColumns:[8]};
   return defs;
 }
