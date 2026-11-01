@@ -61,4 +61,17 @@ for(const change of [{vendorId:'V2'},{status:'CANCELLED'},{status:'RECEIVED'},{u
   receive([{productId:'B',qty:1,amount:10}]);
   assert.equal(writes[0].PORef,''); // Unordered delivery still works.
 }
-console.log('Order receiving checks passed (14 scenarios).');
+{
+  // Each product line can carry its own GST rate -- a vendor's bill often mixes 18% and 5% items.
+  const {receive,writes}=fixture();
+  receive([{poId:'PO-1',productId:'A',qty:2,amount:400,gstPercent:18},{poId:'PO-2',productId:'B',qty:3,amount:30,gstPercent:5}]);
+  assert.equal(writes[0].GSTPercent,18); assert.equal(writes[0].GSTAmount,72);
+  assert.equal(writes[1].GSTPercent,5); assert.equal(writes[1].GSTAmount,1.5);
+}
+{
+  // Blank GST on a line means that product had none -- not a flat rate applied to the whole bill.
+  const {receive,writes}=fixture();
+  receive([{poId:'PO-1',productId:'A',qty:2,amount:400,gstPercent:18},{poId:'PO-2',productId:'B',qty:3,amount:30}]);
+  assert.equal(writes[0].GSTAmount,72); assert.equal(writes[1].GSTPercent,''); assert.equal(writes[1].GSTAmount,'');
+}
+console.log('Order receiving checks passed (16 scenarios).');

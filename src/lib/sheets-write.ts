@@ -1212,26 +1212,29 @@ async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, d
     const hasAmount = rawAmount !== "" && rawAmount !== undefined && rawAmount !== null;
     const amount = hasAmount ? Number(rawAmount) : 0;
     if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
-    return { product, productId: line.productId, qty, qtyBase, amount, hasAmount, poId: order ? order.orderId : "", locationId: order ? order.deliveryLocationId : locationId };
+    const gst = line.gstPercent === "" || line.gstPercent === undefined || line.gstPercent === null ? "" : Number(line.gstPercent);
+    if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
+    return { product, productId: line.productId, qty, qtyBase, amount, hasAmount, gst, poId: order ? order.orderId : "", locationId: order ? order.deliveryLocationId : locationId };
   });
 
-  const gst = data.gstPercent === "" || data.gstPercent === undefined || data.gstPercent === null ? "" : Number(data.gstPercent);
-  if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
-  const billGst = gst === "" ? "" : Math.round(prepared.reduce((sum, line) => sum + line.amount, 0) * gst) / 100;
   const discounted = data.discountedAmount === "" || data.discountedAmount === undefined || data.discountedAmount === null ? "" : Number(data.discountedAmount);
   if (discounted !== "" && (!isFinite(discounted) || discounted < 0)) throw new Error("VALIDATION: Enter a valid discounted price.");
 
   const firstTxn = nextId("TXN");
   const now = dateToSerial(resolveTxnDate(data));
-  const rows = prepared.map((line, i) => ({
-    TxnID: i === 0 ? firstTxn : nextId("TXN"), ReceiptID: firstTxn, Date: now, Type: "RECEIPT", Direction: 1,
-    ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
-    LocationID: line.locationId, PORef: line.poId, VendorID: data.vendorId, InvoiceNo: data.invoiceNo || "",
-    Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount,
-    GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
-    BillPhotoURL: "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
-    Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : "", gst === "" ? "" : `GST ${gst}% ₹${billGst}`, discounted === "" ? "" : `Discounted price ₹${discounted}`].filter(Boolean).join(" | "),
-  }));
+  const rows = prepared.map((line, i) => {
+    const amount = line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount;
+    const gst = line.gst;
+    const gstAmount = gst === "" ? "" : Math.round(amount * Number(gst)) / 100;
+    return {
+      TxnID: i === 0 ? firstTxn : nextId("TXN"), ReceiptID: firstTxn, Date: now, Type: "RECEIPT", Direction: 1,
+      ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
+      LocationID: line.locationId, PORef: line.poId, VendorID: data.vendorId, InvoiceNo: data.invoiceNo || "",
+      Amount: amount, GSTPercent: gst, GSTAmount: gstAmount,
+      BillPhotoURL: "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
+      Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : "", discounted === "" ? "" : `Discounted price ₹${discounted}`].filter(Boolean).join(" | "),
+    };
+  });
   for (const row of rows) await appendRow(token, "LEDGER", row);
   for (const line of prepared) {
     if (line.hasAmount && line.qtyBase > 0) await updateRow(token, "PRODUCTS", "ProductID", String(line.productId), { Cost: line.amount / line.qtyBase });

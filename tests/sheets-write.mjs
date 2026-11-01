@@ -997,8 +997,9 @@ await (async () => {
   tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-A', ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
   tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-B', ProductID: 'PRD-0002', VendorID: 'VND-1', QtyOrdered: 10, UOM: 'BOTTLE', Status: 'ORDERED', DeliveryLocationID: 'LOC-01' }));
   const result = await writeDirect('stock.receiveOrders', 'purchase@ahl.com', {
-    vendorId: 'VND-1', invoiceNo: 'INV-5', gstPercent: 18, discountedAmount: 900,
-    lines: [{ productId: 'PRD-0001', poId: 'PO-A', qty: 3, amount: 600 }, { productId: 'PRD-0002', poId: 'PO-B', qty: 2 }],
+    vendorId: 'VND-1', invoiceNo: 'INV-5', discountedAmount: 900,
+    // Different GST per product line -- PO-A is taxed at 18%, PO-B has none.
+    lines: [{ productId: 'PRD-0001', poId: 'PO-A', qty: 3, amount: 600, gstPercent: 18 }, { productId: 'PRD-0002', poId: 'PO-B', qty: 2 }],
     operationId: opId(),
   });
   assert.equal(result.txnIds.length, 2);
@@ -1008,7 +1009,10 @@ await (async () => {
   assert.equal(rowA[h.indexOf('ReceiptID')], rowB[h.indexOf('ReceiptID')]); // one shared receipt
   assert.equal(rowA[h.indexOf('Amount')], 600);
   assert.equal(rowB[h.indexOf('Amount')], 2 * 200 * 1); // no amount given -> QtyBase * product cost
-  assert.match(String(rowA[h.indexOf('Notes')]), /GST 18% ₹/);
+  assert.equal(rowA[h.indexOf('GSTPercent')], 18);
+  assert.equal(rowA[h.indexOf('GSTAmount')], 108); // 600 * 18%
+  assert.equal(rowB[h.indexOf('GSTPercent')], '');
+  assert.equal(rowB[h.indexOf('GSTAmount')], '');
   assert.match(String(rowA[h.indexOf('Notes')]), /Discounted price ₹900/);
 })();
 await (async () => {

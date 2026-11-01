@@ -309,12 +309,11 @@ function processStockReceiveLines(payload) {
     var hasAmount = rawAmount !== "" && rawAmount !== undefined && rawAmount !== null;
     var amount = hasAmount ? Number(rawAmount) : 0;
     if (!isFinite(amount) || amount < 0) throw new Error("VALIDATION: Enter a valid amount.");
-    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount, hasAmount: hasAmount, poId: order ? order.orderId : '', locationId: order ? order.deliveryLocationId : locationId };
+    var gst = line.gstPercent === "" || line.gstPercent === undefined || line.gstPercent === null ? "" : Number(line.gstPercent);
+    if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
+    return { product: product, productId: line.productId, qty: qty, qtyBase: qtyBase, amount: amount, hasAmount: hasAmount, gst: gst, poId: order ? order.orderId : '', locationId: order ? order.deliveryLocationId : locationId };
   });
 
-  var gst = req.gstPercent === "" || req.gstPercent === undefined || req.gstPercent === null ? "" : Number(req.gstPercent);
-  if (gst !== "" && (!isFinite(gst) || gst < 0 || gst > 28)) throw new Error("VALIDATION: GST must be between 0 and 28.");
-  var billGst = gst === "" ? "" : Math.round(prepared.reduce(function (sum, line) { return sum + line.amount; }, 0) * gst) / 100;
   // The receiver's own negotiated/discounted final price for the whole bill -- informational,
   // recorded alongside the computed total rather than changing any line's Amount.
   var discounted = req.discountedAmount === "" || req.discountedAmount === undefined || req.discountedAmount === null ? "" : Number(req.discountedAmount);
@@ -331,14 +330,16 @@ function processStockReceiveLines(payload) {
 
   var now = resolveTxnDate(req);
   var rows = prepared.map(function (line, i) {
+    var amount = line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount;
+    var gstAmount = line.gst === "" ? "" : Math.round(amount * line.gst) / 100;
     return {
       TxnID: i === 0 ? firstTxn : nextId("TXN"),
       ReceiptID: firstTxn,
       Date: now, Type: "RECEIPT", Direction: 1,
       ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
-      LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: line.poId && !line.hasAmount ? line.qtyBase * (Number(line.product.Cost) || 0) : line.amount, GSTPercent: gst, GSTAmount: gst === "" ? "" : Math.round(line.amount * gst) / 100,
+      LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: amount, GSTPercent: line.gst, GSTAmount: gstAmount,
       BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
-      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", gst === "" ? "" : "GST " + gst + "% ₹" + billGst, discounted === "" ? "" : "Discounted price ₹" + discounted].filter(Boolean).join(" | ")
+      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", discounted === "" ? "" : "Discounted price ₹" + discounted].filter(Boolean).join(" | ")
     };
   });
   appendRecords("LEDGER", rows);
