@@ -870,12 +870,13 @@ async function handleStockIssue(token: string, actor: string, ctx: Ctx, data: Re
   const now = dateToSerial(resolveTxnDate(data));
   for (const split of splits) {
     const qty = Number(split.qty) || 0;
+    const amount = qty * (Number(product.Cost) || 0);
     await appendRow(token, "LEDGER", {
       TxnID: nextId("TXN"), Date: now, Type: "ISSUE", Direction: -1, ProductID: data.productId, Qty: qty,
       UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, CategoryID: split.categoryId || "",
       BusinessUnit: split.businessUnit || businessUnitOf(ctx, split.categoryId), PersonID: split.recipientUserId || "",
-      HandoverID: handoverId, Amount: qty * (Number(product.Cost) || 0), Actor: actor, Status: "ISSUED", Notes: split.notes || "",
-      ProductName: product.Name,
+      HandoverID: handoverId, Amount: amount, Actor: actor, Status: "ISSUED", Notes: split.notes || "",
+      ProductName: product.Name, TotalAmount: amount,
     });
   }
   await auditWrite(token, actor, "stock.issue", handoverId, { productId: data.productId, locationId, total, splits: splits.length });
@@ -909,11 +910,12 @@ async function handleRetailSale(token: string, actor: string, ctx: Ctx, data: Re
   if (clientPhone) notesParts.push(`Phone: ${clientPhone}`);
   if (data.refNo) notesParts.push(`Ref: ${String(data.refNo).trim()}`);
   if (data.notes) notesParts.push(String(data.notes).trim());
+  const saleAmount = qtyBase * (Number(product.Cost) || 0);
   await appendRow(token, "LEDGER", {
     TxnID: txnId, Date: dateToSerial(new Date()), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
     UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase, LocationID: locationId, PersonID: techId,
-    Amount: qtyBase * (Number(product.Cost) || 0), Actor: actor, Status: "SOLD", Notes: notesParts.join(" | "),
-    ProductName: product.Name,
+    Amount: saleAmount, Actor: actor, Status: "SOLD", Notes: notesParts.join(" | "),
+    ProductName: product.Name, TotalAmount: saleAmount,
   });
   await auditWrite(token, actor, "stock.retailSale", txnId, { productId: data.productId, qty, clientName });
   return { txnId, newBalance: balance - qtyBase, uom: product.IssueUOM };
@@ -1194,7 +1196,7 @@ async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: 
     InvoiceNo: data.invoiceNo || "", Amount: amount, BillPhotoURL: "", ProductPhotoURL: "",
     ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
     Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : ""].filter(Boolean).join(" | "),
-    ProductName: product.Name,
+    ProductName: product.Name, TotalAmount: amount,
   });
 
   // The price actually paid is the most current cost there is.
@@ -1269,7 +1271,7 @@ async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, d
       Amount: amount, GSTPercent: gst, GSTAmount: gstAmount,
       BillPhotoURL: "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
       Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : "", discounted === "" ? "" : `Discounted price ₹${discounted}`].filter(Boolean).join(" | "),
-      ProductName: line.product.Name,
+      ProductName: line.product.Name, TotalAmount: amount + (gstAmount === "" ? 0 : Number(gstAmount)),
     };
   });
   for (const row of rows) await appendRow(token, "LEDGER", row);

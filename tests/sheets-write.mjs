@@ -170,19 +170,19 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
       ],
     },
     LEDGER: {
-      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'ProductPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit', 'ReceivedByUserId', 'ProductName'],
+      headers: ['TxnID', 'Date', 'InvoiceNo', 'Type', 'Direction', 'ProductID', 'ProductName', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'CategoryID', 'PersonID', 'VendorID', 'HandoverID', 'PORef', 'Amount', 'GSTPercent', 'GSTAmount', 'TotalAmount', 'BillPhotoURL', 'Actor', 'Status', 'Notes', 'ProductPhotoURL', 'ReceivedByUserId', 'BusinessUnit', 'ReceiptID'],
       rows: [],
     },
-    PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID', 'ProductName'], rows: [] },
+    PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'ProductName', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
     REQUESTS: {
-      headers: ['RequestID', 'Date', 'ProductID', 'NewProductName', 'Qty', 'RequestedBy', 'Urgency', 'EstValue', 'Status', 'ApprovedBy', 'ApprovedAt', 'Actor', 'Notes', 'Source', 'ProductName'],
+      headers: ['RequestID', 'Date', 'ProductID', 'ProductName', 'NewProductName', 'Qty', 'RequestedBy', 'Urgency', 'EstValue', 'Status', 'ApprovedBy', 'ApprovedAt', 'Actor', 'Notes', 'Source'],
       rows: [
-        ['REQ-1', 0, 'PRD-0001', '', 1, 'U1', 'Normal', 2, 'OPEN', '', '', 'purchase@ahl.com', '', 'APP'],
-        ['REQ-2', 0, 'PRD-0001', '', 3, 'U1', 'Normal', 6, 'PENDING_APPROVAL', '', '', 'purchase@ahl.com', '', 'APP'],
+        ['REQ-1', 0, 'PRD-0001', 'Shampoo', '', 1, 'U1', 'Normal', 2, 'OPEN', '', '', 'purchase@ahl.com', '', 'APP'],
+        ['REQ-2', 0, 'PRD-0001', 'Shampoo', '', 3, 'U1', 'Normal', 6, 'PENDING_APPROVAL', '', '', 'purchase@ahl.com', '', 'APP'],
       ],
     },
     OPENING_COUNTS: {
-      headers: ['CountID', 'Date', 'ProductID', 'Qty', 'LocationID', 'CountedBy', 'Status', 'Notes', 'QtyOrdered', 'QtyReceived', 'CountUOM', 'ReviewedBy', 'ReviewedAt', 'ProductName'],
+      headers: ['CountID', 'Date', 'ProductID', 'ProductName', 'Qty', 'LocationID', 'CountedBy', 'Status', 'Notes', 'QtyOrdered', 'QtyReceived', 'CountUOM', 'ReviewedBy', 'ReviewedAt'],
       rows: [],
     },
     OPERATIONS: { headers: ['OperationID', 'Date', 'Actor', 'Action', 'Status', 'Result'], rows: [] },

@@ -62,6 +62,7 @@ function processStockIssue(payload) {
 
   var rows = req.splits.map(function (split) {
     var qty = Number(split.qty) || 0;
+    var amount = qty * (Number(product.Cost) || 0);
     return {
       TxnID: nextId("TXN"),
       Date: now,
@@ -76,11 +77,12 @@ function processStockIssue(payload) {
       BusinessUnit: split.businessUnit || businessUnitOf(split.categoryId),
       PersonID: split.recipientUserId || "",
       HandoverID: handoverId,
-      Amount: qty * (Number(product.Cost) || 0),
+      Amount: amount,
       Actor: payload.actor,
       Status: "ISSUED",
       Notes: split.notes || "",
-      ProductName: product.Name
+      ProductName: product.Name,
+      TotalAmount: amount
     };
   });
 
@@ -144,11 +146,13 @@ function processRetailSale(payload) {
   if (req.notes) notesParts.push(String(req.notes).trim());
 
   ensureColumn("LEDGER", "ProductName");
+  var saleAmount = qtyBase * (Number(product.Cost) || 0);
   appendRecord("LEDGER", {
     TxnID: txnId, Date: new Date(), Type: "RETAIL_SALE", Direction: -1,
     ProductID: req.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
-    LocationID: locationId, PersonID: techId, Amount: qtyBase * (Number(product.Cost) || 0),
-    Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | "), ProductName: product.Name
+    LocationID: locationId, PersonID: techId, Amount: saleAmount,
+    Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | "), ProductName: product.Name,
+    TotalAmount: saleAmount
   });
 
   audit(payload.actor, "stock.retailSale", txnId, { productId: req.productId, qty: qty, clientName: clientName });
@@ -252,7 +256,8 @@ function processStockReceive(payload) {
     Actor: payload.actor,
     Status: "RECEIVED",
     Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : ""].filter(Boolean).join(" | "),
-    ProductName: product.Name
+    ProductName: product.Name,
+    TotalAmount: amount
   });
 
   // The price actually paid is the most current cost there is -- keep the catalogue in step with
@@ -346,7 +351,8 @@ function processStockReceiveLines(payload) {
       LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: amount, GSTPercent: line.gst, GSTAmount: gstAmount,
       BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
       Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", discounted === "" ? "" : "Discounted price ₹" + discounted].filter(Boolean).join(" | "),
-      ProductName: line.product.Name
+      ProductName: line.product.Name,
+      TotalAmount: amount + (gstAmount === "" ? 0 : Number(gstAmount))
     };
   });
   appendRecords("LEDGER", rows);
