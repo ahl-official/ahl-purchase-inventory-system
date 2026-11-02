@@ -27,10 +27,18 @@ export function groupHistory(rows:MovementHistory[]) {
   return [...groups.entries()].map(([key,lines])=>({key,lines}));
 }
 
-/** Include whole invoices at the history cutoff, so their totals are never truncated. */
+/** Include whole invoices at the history cutoff, so their totals are never truncated, then order
+    by the actual Date field (newest first) rather than sheet append order -- a backdated entry
+    ("logging this late") must show up where it belongs chronologically, not wherever it was
+    appended. Rows sharing the same date keep their original relative order (newest-appended
+    first), same as the plain reverse this replaces. */
 export function recentHistory(rows:MovementHistory[],limit=500) {
   const keys=new Set(rows.slice(-limit).map(historyKey));
-  return rows.filter(row=>keys.has(historyKey(row))).reverse();
+  return rows
+    .map((row,index)=>({row,index}))
+    .filter(({row})=>keys.has(historyKey(row)))
+    .sort((a,b)=>b.row.date.localeCompare(a.row.date)||b.index-a.index)
+    .map(({row})=>row);
 }
 
 export function receiptTotals(lines:MovementHistory[]) {

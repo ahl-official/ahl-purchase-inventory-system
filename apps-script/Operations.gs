@@ -312,10 +312,23 @@ function movementHistoryKey(r) {
     if (r.BillPhotoURL) return JSON.stringify(prefix.concat(['bill',String(r.BillPhotoURL)]));
     return JSON.stringify(prefix.concat(['transaction',r.TxnID]));
 }
+/** Ordered by the actual Date field (newest first), not sheet append order -- a backdated entry
+    ("logging this late") must show up where it belongs chronologically. Rows sharing the same
+    date keep their original relative order (newest-appended first), same as the plain reverse
+    this replaces. */
+function movementHistoryTime(d) {
+  var n=Number(d);
+  if (isFinite(n)) return n;
+  var t=new Date(d).getTime();
+  return isFinite(t) ? t : 0;
+}
 function getMovementHistory() {
   var rows=readAll('LEDGER'), keys={};
   rows.slice(-500).forEach(function(r){keys[movementHistoryKey(r)]=true;});
-  return rows.filter(function(r){return keys[movementHistoryKey(r)];}).reverse().map(function(r){
+  var selected=rows.map(function(r,i){return {r:r,i:i};}).filter(function(x){return keys[movementHistoryKey(x.r)];});
+  selected.sort(function(a,b){var d=movementHistoryTime(b.r.Date)-movementHistoryTime(a.r.Date);return d!==0?d:b.i-a.i;});
+  return selected.map(function(x){
+    var r=x.r;
     return {txnId:r.TxnID,date:r.Date,productId:r.ProductID,qty:Number(r.Qty),uom:r.UOM,type:r.Type,locationId:r.LocationID,personId:r.PersonID,status:r.Status,notes:r.Notes || '',vendorId:String(r.VendorID || ''),invoiceNo:String(r.InvoiceNo || ''),receiptId:String(r.ReceiptID || ''),poRef:String(r.PORef || ''),billPhotoUrl:String(r.BillPhotoURL || ''),amount:r.Amount === '' || r.Amount == null ? null : Number(r.Amount),gstAmount:r.GSTAmount === '' || r.GSTAmount == null ? null : Number(r.GSTAmount)};
   });
 }

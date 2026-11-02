@@ -21,11 +21,16 @@ function inventoryViewDefinitions(headers) {
     ],dateColumns:[]};
   });
   var movement=[l('Date'),lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),l('Qty'),l('UOM'),lookup(l('LocationID'),'LISTS','Code','Name'),l('PersonID'),l('Type'),l('Status'),l('HandoverID'),l('Notes')];
-  defs.HANDOVER_TRACKER={headers:['Date','Product Name','Qty','Unit','Destination','Receiver','Type','Status','Handover ID','Notes'],formulas:[filter(movement,[l('Type')+'="HANDOVER"',l('Direction')+'=1'])],dateColumns:[0]};
+  // Newest first, by the actual Date column (index 1 of the FILTER result) -- not sheet order,
+  // since a backdated entry must land where it belongs chronologically, not at the bottom.
+  function sortedFilter(parts,conditions){return array('IFERROR(SORT(FILTER({'+parts.join(',')+'},'+conditions.join(',')+'),1,FALSE),"")');}
+  defs.HANDOVER_TRACKER={headers:['Date','Product Name','Qty','Unit','Destination','Receiver','Type','Status','Handover ID','Notes'],formulas:[sortedFilter(movement,[l('Type')+'="HANDOVER"',l('Direction')+'=1'])],dateColumns:[0]};
   defs.ISSUE_HISTORY={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,['('+l('Type')+'="ISSUE")+('+l('Type')+'="RETURN")+('+l('Type')+'="DAMAGE")'])],dateColumns:[0]};
   defs.REPORTS={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,[l('TxnID')+'<>""'])],dateColumns:[0]};
   defs.PURCHASE_TRACKER={headers:['Order ID','Invoice No','Product Name','Vendor','Ordered','Received','Outstanding','Unit','Status','Date','Request ID','Amount (Rs)','GST (Rs)','Total (Rs)'],formulas:[
-    '=IFNA(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),"")',
+    // Newest order first, by the order's own Date -- every other column keys off this spilled
+    // Order ID list, so sorting it here re-aligns the whole row, not sheet append order.
+    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),FALSE),"")',
     // The vendor's bill: an order can be received across more than one invoice, so every distinct
     // invoice number recorded against it is joined together rather than picking just one.
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),""))))',

@@ -37,4 +37,9 @@ assert.equal(receiptTotals(groupHistory(gas).find(g=>g.lines[0].type==='RECEIPT'
 rawRows.push({TxnID:'blank',Type:'RECEIPT',Date:rows[0].date,Amount:'',GSTAmount:''});
 assert.equal(ctx.getMovementHistory()[0].amount,null);
 assert.equal(ctx.getMovementHistory()[0].gstAmount,null);
+
+// A late entry ("logging this late") appended most recently but dated earlier than rows already
+// present must show up chronologically, not jump to the front just because it was appended last.
+const backdated=[row('early',{date:'2026-10-01T00:00:00.000Z',type:'ISSUE'}),row('mid',{date:'2026-10-15T00:00:00.000Z',type:'ISSUE'}),row('late-but-old-date',{date:'2026-10-05T00:00:00.000Z',type:'ISSUE'})];
+assert.deepEqual(recentHistory(backdated).map(r=>r.txnId),['mid','late-but-old-date','early']);
 console.log('Invoice history grouping, totals, cutoff, and backend parity checks passed.');

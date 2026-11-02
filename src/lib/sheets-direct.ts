@@ -205,6 +205,11 @@ function getCatalogue(ctx: Ctx) {
   };
 }
 
+/** Newest Date field first -- not append order, since a backdated entry ("logging this late") can land at the bottom of the sheet with an earlier Date than rows already above it. */
+function byDateDesc(a: { date: string }, b: { date: string }): number {
+  return b.date.localeCompare(a.date);
+}
+
 export function listPurchaseOrders(ctx: Ctx) {
   const ledger = ctx.ledger;
   const headOfficeId = getConfig(ctx, "HeadOfficeLocationID", "LOC-01");
@@ -218,7 +223,7 @@ export function listPurchaseOrders(ctx: Ctx) {
       notes: r.Notes || "", deliveryLocationId: r.DeliveryLocationID || headOfficeId,
       unitPrice: r.UnitPrice === "" || r.UnitPrice == null ? null : Number(r.UnitPrice), batchId: r.BatchID || r.OrderID,
     };
-  }).reverse();
+  }).sort(byDateDesc);
 }
 
 function listOpeningCounts(ctx: Ctx, actor: string) {
@@ -239,7 +244,7 @@ function listOpeningCounts(ctx: Ctx, actor: string) {
       qtyReceived: row.QtyReceived === "" ? Number(row.Qty) || 0 : Number(row.QtyReceived),
       countUom: row.CountUOM || (product ? product.IssueUOM : ""),
     };
-  }).reverse();
+  }).sort(byDateDesc);
 }
 
 function listPendingHandovers(ctx: Ctx, actor?: string) {
@@ -251,7 +256,7 @@ function listPendingHandovers(ctx: Ctx, actor?: string) {
   return rows.map((r) => {
     const product = getProduct(ctx, r.ProductID);
     return { handoverId: r.HandoverID, productId: r.ProductID, productName: product ? product.Name : r.ProductID, qty: r.Qty, uom: r.UOM, toLocationId: r.LocationID, date: serialToIso(r.Date), actor: r.Actor, notes: r.Notes };
-  });
+  }).sort(byDateDesc);
 }
 
 function getDashboard(ctx: Ctx, actor: string) {
@@ -292,17 +297,21 @@ function getDashboard(ctx: Ctx, actor: string) {
     .map((r) => {
       const product = r.ProductID ? getProduct(ctx, r.ProductID) : null;
       return { requestId: r.RequestID, date: serialToIso(r.Date), productId: r.ProductID || "", productName: product ? product.Name : (r.NewProductName || "(unnamed)"), isNewProduct: !r.ProductID, qty: r.Qty, requestedBy: r.RequestedBy, status: r.Status, estValue: r.EstValue, approvedBy: r.ApprovedBy, source: r.Source || "APP", notes: r.Notes };
-    }).reverse();
+    }).sort(byDateDesc);
 
-  const recentActivity = ledgerRows.slice(Math.max(0, ledgerRows.length - 30)).reverse().map((r) => {
+  // Sorted by the real Date field, not sheet append order, before the cutoff and the per-row
+  // vendor-rate scan below -- a backdated entry must not jump the line or hide a more recent rate.
+  const ledgerByDate = [...ledgerRows].sort((a, b) => serialToIso(b.Date).localeCompare(serialToIso(a.Date)));
+
+  const recentActivity = ledgerByDate.slice(0, 30).map((r) => {
     const product = getProduct(ctx, r.ProductID);
     return { txnId: r.TxnID, date: serialToIso(r.Date), type: r.Type, direction: Number(r.Direction) || 0, productName: product ? product.Name : r.ProductID, qty: r.Qty, uom: r.UOM, locationId: r.LocationID, categoryId: r.CategoryID || "", personId: r.PersonID || "", vendorId: r.VendorID || "", actor: r.Actor, status: r.Status, notes: r.Notes || "" };
   });
 
   const vendorRates: Array<{ productId: unknown; productName: unknown; vendorId: unknown; rate: number; date: string }> = [];
   const seen: Record<string, boolean> = {};
-  for (let i = ledgerRows.length - 1; i >= 0 && vendorRates.length < 50; i--) {
-    const r = ledgerRows[i];
+  for (let i = 0; i < ledgerByDate.length && vendorRates.length < 50; i++) {
+    const r = ledgerByDate[i];
     if (String(r.Type).trim().toUpperCase() === "RECEIPT" && r.VendorID) {
       const key = r.ProductID + "_" + r.VendorID;
       if (!seen[key]) {
