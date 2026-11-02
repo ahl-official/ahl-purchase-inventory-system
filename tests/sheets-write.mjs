@@ -30,7 +30,7 @@ const FAKE_PRIVATE_KEY = privateKey.export({ type: 'pkcs8', format: 'pem' });
 // An in-memory spreadsheet: { TAB: { headers: string[], rows: unknown[][] } }, plus a tiny
 // in-memory Drive (folders + uploaded files) for drive-write.ts's calls.
 function sheetsMock(tabs) {
-  const calls = { append: [], update: [], driveUpload: [], drivePermission: [], gridGrow: [] };
+  const calls = { append: [], update: [], driveUpload: [], drivePermission: [], gridGrow: [], sort: [] };
   const drive = { folders: {}, nextId: 1 };
   // Each tab's simulated grid starts exactly as wide as its current headers -- the same real
   // shape that caught a production bug (LEDGER's live grid was capped at 26/Z columns, and
@@ -55,6 +55,17 @@ function sheetsMock(tabs) {
           const entry = Object.values(grid).find((g) => g.sheetId === req.appendDimension.sheetId);
           if (entry) entry.columnCount += req.appendDimension.length;
           calls.gridGrow.push(req.appendDimension);
+        }
+        if (req.sortRange) {
+          const sheetId = req.sortRange.range.sheetId;
+          const tabEntry = Object.entries(grid).find(([, g]) => g.sheetId === sheetId);
+          const t = tabEntry && tabs[tabEntry[0]];
+          const spec = req.sortRange.sortSpecs[0];
+          if (t && spec) {
+            const dir = spec.sortOrder === 'DESCENDING' ? -1 : 1;
+            t.rows.sort((a, b) => (Number(a[spec.dimensionIndex]) - Number(b[spec.dimensionIndex])) * dir);
+            calls.sort.push({ tab: tabEntry[0], dimensionIndex: spec.dimensionIndex, sortOrder: spec.sortOrder });
+          }
         }
       }
       return { ok: true, status: 200, json: async () => ({}) };
@@ -812,6 +823,33 @@ await (async () => {
 await (async () => {
   const { writeDirect } = fixture();
   await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'DAMAGE', operationId: opId() }), /VALIDATION/); // no reason given
+})();
+
+// ---- LEDGER/PURCHASE_ORDERS auto-sort by Date on every append ----
+await (async () => {
+  // A row dated well before an existing row, appended AFTER it (a backdated/backfilled entry),
+  // must end up physically ahead of it once written -- not stuck at the bottom in append order.
+  const { writeDirect, tabs, mock } = fixture();
+  const IST = 330 * 60 * 1000;
+  const serial = (d) => (d.getTime() + IST) / 86400000 + 25569;
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'SEED1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED', Date: serial(new Date('2026-10-25T00:00:00Z')) }));
+  await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 2, kind: 'DAMAGE', date: '2026-10-05', notes: 'Backfilled from paper log', operationId: opId() });
+  assert.ok(mock.calls.sort.some((s) => s.tab === 'LEDGER'));
+  const h = tabs.LEDGER.headers;
+  const order = tabs.LEDGER.rows.map((r) => ({ txnId: r[h.indexOf('TxnID')], date: Number(r[h.indexOf('Date')]) }));
+  assert.ok(order[0].date <= order[1].date, 'LEDGER rows must come out ordered ascending by Date after a backdated append');
+  assert.equal(order[0].txnId, order.find((o) => o.txnId !== 'SEED1').txnId); // the backdated DAMAGE entry now sorts ahead of the newer SEED1 receipt
+})();
+await (async () => {
+  // Same for PURCHASE_ORDERS: a backdated order created after an existing one still lands in date order.
+  const { writeDirect, tabs } = fixture();
+  const IST = 330 * 60 * 1000;
+  const serial = (d) => (d.getTime() + IST) / 86400000 + 25569;
+  tabs.PURCHASE_ORDERS.rows.push(rowFor(tabs, 'PURCHASE_ORDERS', { OrderID: 'PO-SEED', ProductID: 'PRD-0001', VendorID: 'VND-1', QtyOrdered: 5, UOM: 'BOTTLE', Status: 'ORDERED', Date: serial(new Date('2026-10-25T00:00:00Z')) }));
+  await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0002', vendorId: 'VND-1', qty: 1, date: '2026-10-01', operationId: opId() });
+  const h = tabs.PURCHASE_ORDERS.headers;
+  const order = tabs.PURCHASE_ORDERS.rows.map((r) => Number(r[h.indexOf('Date')]));
+  assert.ok(order[0] <= order[1]);
 })();
 
 // ---- person.add (the "Other" technician on Issue stock / Retail sale) ----

@@ -127,7 +127,26 @@ function appendRecords(name, records) {
     .getRange(t.sheet.getLastRow() + 1, 1, rows.length, t.headers.length)
     .setValues(rows);
 
+  if (name in SORT_BY_DATE_TABS) sortTabByDate(name);
+
   return records;
+}
+
+// LEDGER/PURCHASE_ORDERS are kept physically ordered by Date -- a backdated or backfilled entry
+// must land where it belongs chronologically, not wherever it was appended.
+var SORT_BY_DATE_TABS = { LEDGER: true, PURCHASE_ORDERS: true };
+
+/** Sorts a tab's data rows by its Date column, oldest first. Only reorders whole rows -- no cell
+    is ever dropped or overwritten -- so it is safe to run after every append. */
+function sortTabByDate(name) {
+  var t = table(name);
+  var dateCol = t.idx['Date'];
+  if (dateCol === undefined) return;
+  var lastRow = t.sheet.getLastRow();
+  if (lastRow < 3) return;
+  t.sheet.getRange(2, 1, lastRow - 1, t.headers.length).sort({ column: dateCol + 1, ascending: true });
+  delete MEMO_TABLES[name];
+  if (MEMO_ROWS) delete MEMO_ROWS[name];
 }
 
 /** First record whose column equals value, or null. Case-insensitive on strings. */

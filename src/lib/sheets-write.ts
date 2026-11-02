@@ -109,6 +109,31 @@ async function appendRow(token: string, sheetName: string, record: Record<string
   await sheetsFetch(token, `/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
     method: "POST", body: JSON.stringify({ values: [row] }),
   });
+  if (SORT_BY_DATE_TABS.has(sheetName)) await sortTabByDate(token, sheetName, headers);
+}
+
+// LEDGER/PURCHASE_ORDERS are kept physically ordered by Date -- a backdated or backfilled entry
+// must land where it belongs chronologically, not wherever it was appended. Matches Db.gs's
+// sortTabByDate, called from the same place (right after appendRecords/appendRow).
+const SORT_BY_DATE_TABS = new Set(["LEDGER", "PURCHASE_ORDERS"]);
+
+/** Sorts a tab's data rows by its Date column, oldest first. sortRange only reorders whole rows
+ * -- no cell is ever dropped or overwritten -- so it is safe to run after every append. */
+async function sortTabByDate(token: string, sheetName: string, headers: string[]): Promise<void> {
+  const dateIdx = headers.indexOf("Date");
+  if (dateIdx < 0) return;
+  const { sheetId } = await getSheetGrid(token, sheetName);
+  await sheetsFetch(token, ":batchUpdate", {
+    method: "POST",
+    body: JSON.stringify({
+      requests: [{
+        sortRange: {
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 0 },
+          sortSpecs: [{ dimensionIndex: dateIdx, sortOrder: "ASCENDING" }],
+        },
+      }],
+    }),
+  });
 }
 
 /** sheetId (gid) + current grid column count for a tab, read fresh every call -- ensureColumn only grows a grid, never shrinks it, so a stale cached columnCount is never trusted. */
