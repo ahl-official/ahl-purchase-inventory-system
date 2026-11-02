@@ -428,7 +428,7 @@ async function handleOrderCreate(token: string, actor: string, ctx: Ctx, data: R
   await appendRow(token, "PURCHASE_ORDERS", {
     OrderID: id, Date: dateToSerial(resolveTxnDate(data)), ProductID: data.productId, VendorID: data.vendorId,
     QtyOrdered: qty, UOM: p.PurchaseUOM || p.IssueUOM, RequestID: data.requestId || "", Status: "ORDERED",
-    Actor: actor, Notes: data.notes || "", DeliveryLocationID: deliveryLocationId, BatchID: id,
+    Actor: actor, Notes: data.notes || "", DeliveryLocationID: deliveryLocationId, BatchID: id, ProductName: p.Name,
   });
   if (data.requestId) await updateRow(token, "REQUESTS", "RequestID", String(data.requestId), { Status: "ORDERED" });
   await auditWrite(token, actor, "order.create", id, data);
@@ -466,6 +466,7 @@ async function handleOrderCreateLines(token: string, actor: string, ctx: Ctx, da
       OrderID: id, Date: date, ProductID: line.productId, VendorID: data.vendorId, QtyOrdered: line.qty,
       UOM: line.product!.PurchaseUOM || line.product!.IssueUOM, RequestID: "", Status: "ORDERED", Actor: actor,
       Notes: line.notes, DeliveryLocationID: deliveryLocationId, UnitPrice: line.unitPrice, BatchID: batchId,
+      ProductName: line.product!.Name,
     });
     ids.push(id);
   }
@@ -669,7 +670,7 @@ async function handlePurchaseRequest(token: string, actor: string, ctx: Ctx, dat
     RequestID: requestId, Date: dateToSerial(now), ProductID: data.productId || "", NewProductName: newProductName,
     Qty: qty, RequestedBy: data.requestedByUserId || "", Urgency: data.urgency || "Normal", EstValue: estValue,
     Status: status, ApprovedBy: approvedBy, ApprovedAt: approvedBy ? dateToSerial(now) : "", Actor: actor,
-    Notes: data.notes || "", Source: requestSource,
+    Notes: data.notes || "", Source: requestSource, ProductName: product ? product.Name : newProductName,
   });
   await auditWrite(token, actor, "purchase.request", requestId, { productId: data.productId || "", newProductName, qty, estValue, approvedBy, status, source: requestSource });
   return { requestId, status, estValue, threshold, approvedBy };
@@ -694,7 +695,7 @@ async function handlePurchaseRequestLines(token: string, actor: string, ctx: Ctx
     if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
     const qty = positiveQuantity(line.qty, product, false);
     const est = qty * (Number(product.Cost) || 0);
-    return { productId: line.productId, qty, est };
+    return { productId: line.productId, qty, est, productName: product.Name };
   });
   const totalEst = Number(data.estimatedValue) || prepared.reduce((sum, line) => sum + line.est, 0);
   const threshold = getConfigNumber(ctx, "ApprovalThreshold", 5000);
@@ -716,7 +717,7 @@ async function handlePurchaseRequestLines(token: string, actor: string, ctx: Ctx
       RequestID: requestId, Date: dateToSerial(now), ProductID: line.productId, NewProductName: "",
       Qty: line.qty, RequestedBy: data.requestedByUserId || "", Urgency: data.urgency || "Normal",
       EstValue: line.est, Status: status, ApprovedBy: approvedBy, ApprovedAt: approvedBy ? dateToSerial(now) : "",
-      Actor: actor, Notes: data.notes || "", Source: requestSource,
+      Actor: actor, Notes: data.notes || "", Source: requestSource, ProductName: line.productName,
     });
     ids.push(requestId);
   }
@@ -783,6 +784,7 @@ async function handleOpeningStockSubmit(token: string, actor: string, ctx: Ctx, 
     CountID: countId, Date: dateToSerial(new Date()), ProductID: data.productId, Qty: qty, LocationID: locationId,
     CountedBy: actor, Status: "PENDING", Notes: data.notes || "", QtyOrdered: data.qtyOrdered || "",
     QtyReceived: data.qtyReceived == null ? qty : Number(data.qtyReceived), CountUOM: data.countUom || product.IssueUOM || "",
+    ProductName: product.Name,
   });
   await auditWrite(token, actor, "opening.submit", countId, { productId: data.productId, qty, locationId });
   return { countId, status: "PENDING", locationId };
@@ -813,6 +815,7 @@ async function handleOpeningStockApprove(token: string, actor: string, ctx: Ctx,
         TxnID: nextId("TXN"), Date: dateToSerial(new Date()), Type: "OPENING", Direction: 1, ProductID: row.ProductID,
         Qty: Number(row.Qty) || 0, UOM: product ? product.IssueUOM : "", QtyBase: Number(row.Qty) || 0,
         LocationID: row.LocationID, HandoverID: countId, Actor: actor, Status: "POSTED", Notes: `Opening count ${countId}`,
+        ProductName: product ? product.Name : row.ProductID,
       });
     }
   }
@@ -872,6 +875,7 @@ async function handleStockIssue(token: string, actor: string, ctx: Ctx, data: Re
       UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, CategoryID: split.categoryId || "",
       BusinessUnit: split.businessUnit || businessUnitOf(ctx, split.categoryId), PersonID: split.recipientUserId || "",
       HandoverID: handoverId, Amount: qty * (Number(product.Cost) || 0), Actor: actor, Status: "ISSUED", Notes: split.notes || "",
+      ProductName: product.Name,
     });
   }
   await auditWrite(token, actor, "stock.issue", handoverId, { productId: data.productId, locationId, total, splits: splits.length });
@@ -909,6 +913,7 @@ async function handleRetailSale(token: string, actor: string, ctx: Ctx, data: Re
     TxnID: txnId, Date: dateToSerial(new Date()), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
     UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase, LocationID: locationId, PersonID: techId,
     Amount: qtyBase * (Number(product.Cost) || 0), Actor: actor, Status: "SOLD", Notes: notesParts.join(" | "),
+    ProductName: product.Name,
   });
   await auditWrite(token, actor, "stock.retailSale", txnId, { productId: data.productId, qty, clientName });
   return { txnId, newBalance: balance - qtyBase, uom: product.IssueUOM };
@@ -950,6 +955,7 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
     TxnID: id, Date: dateToSerial(resolveTxnDate(data)), Type: kind, Direction: direction, ProductID: data.productId,
     Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc, PORef: data.sourceTxnId || "", Actor: actor, Status: "POSTED",
     Notes: kind === "DISTRIBUTION" ? `Given to: ${recipientName}${data.notes ? ` | ${data.notes}` : ""}` : data.notes,
+    ProductName: product.Name,
   };
   if (kind === "DISTRIBUTION") {
     await ensureColumn(token, "LEDGER", "RecipientID");
@@ -1000,11 +1006,13 @@ async function handleStockHandover(token: string, actor: string, ctx: Ctx, data:
     TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: data.productId, Qty: qty,
     UOM: product.IssueUOM, QtyBase: qty, LocationID: fromLocationId, HandoverID: handoverId,
     PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+    ProductName: product.Name,
   });
   await appendRow(token, "LEDGER", {
     TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: data.productId, Qty: qty,
     UOM: product.IssueUOM, QtyBase: qty, LocationID: toLocationId, HandoverID: handoverId,
     PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+    ProductName: product.Name,
   });
   await auditWrite(token, actor, "stock.handover", handoverId, { productId: data.productId, qty, fromLocationId, toLocationId });
   if (data.requestId) await updateRow(token, "REQUESTS", "RequestID", String(data.requestId), { Status: "SUPPLIED" });
@@ -1038,11 +1046,13 @@ async function handleStockHandoverLines(token: string, actor: string, ctx: Ctx, 
       TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: line.productId, Qty: line.qty,
       UOM: line.product.IssueUOM, QtyBase: line.qty, LocationID: fromLocationId, HandoverID: handoverId,
       PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+      ProductName: line.product.Name,
     });
     await appendRow(token, "LEDGER", {
       TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty,
       UOM: line.product.IssueUOM, QtyBase: line.qty, LocationID: toLocationId, HandoverID: handoverId,
       PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
+      ProductName: line.product.Name,
     });
     ids.push(handoverId);
   }
@@ -1184,6 +1194,7 @@ async function handleStockReceive(token: string, actor: string, ctx: Ctx, data: 
     InvoiceNo: data.invoiceNo || "", Amount: amount, BillPhotoURL: "", ProductPhotoURL: "",
     ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
     Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : ""].filter(Boolean).join(" | "),
+    ProductName: product.Name,
   });
 
   // The price actually paid is the most current cost there is.
@@ -1258,6 +1269,7 @@ async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, d
       Amount: amount, GSTPercent: gst, GSTAmount: gstAmount,
       BillPhotoURL: "", ReceivedByUserId: data.receivedByUserId || "", Actor: actor, Status: "RECEIVED",
       Notes: [String(data.notes || "").trim(), data.receivedByName ? `Received by: ${String(data.receivedByName).trim()}` : "", discounted === "" ? "" : `Discounted price ₹${discounted}`].filter(Boolean).join(" | "),
+      ProductName: line.product.Name,
     };
   });
   for (const row of rows) await appendRow(token, "LEDGER", row);

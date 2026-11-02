@@ -62,7 +62,8 @@ function processOrderCreate(payload) {
   var id=nextId('PO');
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
   ensureColumn('PURCHASE_ORDERS','BatchID');
-  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId,BatchID:id});
+  ensureColumn('PURCHASE_ORDERS','ProductName');
+  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId,BatchID:id,ProductName:p.Name});
   if(r.requestId) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
   audit(payload.actor,'order.create',id,r);
   return {orderId:id, deliveryLocationId:deliveryLocationId};
@@ -85,6 +86,7 @@ function processOrderCreateLines(payload) {
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
   ensureColumn('PURCHASE_ORDERS','UnitPrice');
   ensureColumn('PURCHASE_ORDERS','BatchID');
+  ensureColumn('PURCHASE_ORDERS','ProductName');
   var prepared = r.lines.map(function (line) {
     var p = getProduct(line.productId);
     if (!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
@@ -99,7 +101,7 @@ function processOrderCreateLines(payload) {
   var ids = prepared.map(function (line) {
     var id = nextId('PO');
     if (!batchId) batchId = id;
-    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice,BatchID:batchId});
+    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice,BatchID:batchId,ProductName:line.product.Name});
     return id;
   });
   audit(payload.actor,'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});
@@ -197,7 +199,8 @@ function processStockAdjustment(payload) {
   var id=nextId('TXN');
   var notes=r.kind==='DISTRIBUTION' ? ('Given to: '+recipientName+(r.notes ? ' | '+r.notes : '')) : r.notes;
   if(r.kind==='DISTRIBUTION') ensureColumn('LEDGER','RecipientID');
-  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:notes};
+  ensureColumn('LEDGER','ProductName');
+  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:notes,ProductName:p.Name};
   if(r.kind==='DISTRIBUTION') record.RecipientID=r.recipientId;
   appendRecord('LEDGER',record);
   audit(payload.actor,'stock.adjust',id,r);

@@ -58,6 +58,7 @@ function processStockIssue(payload) {
   var handoverId = nextId("HND");
   var now = resolveTxnDate(req);
   ensureColumn("LEDGER", "BusinessUnit");
+  ensureColumn("LEDGER", "ProductName");
 
   var rows = req.splits.map(function (split) {
     var qty = Number(split.qty) || 0;
@@ -78,7 +79,8 @@ function processStockIssue(payload) {
       Amount: qty * (Number(product.Cost) || 0),
       Actor: payload.actor,
       Status: "ISSUED",
-      Notes: split.notes || ""
+      Notes: split.notes || "",
+      ProductName: product.Name
     };
   });
 
@@ -141,11 +143,12 @@ function processRetailSale(payload) {
   if (req.refNo) notesParts.push("Ref: " + String(req.refNo).trim());
   if (req.notes) notesParts.push(String(req.notes).trim());
 
+  ensureColumn("LEDGER", "ProductName");
   appendRecord("LEDGER", {
     TxnID: txnId, Date: new Date(), Type: "RETAIL_SALE", Direction: -1,
     ProductID: req.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
     LocationID: locationId, PersonID: techId, Amount: qtyBase * (Number(product.Cost) || 0),
-    Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | ")
+    Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | "), ProductName: product.Name
   });
 
   audit(payload.actor, "stock.retailSale", txnId, { productId: req.productId, qty: qty, clientName: clientName });
@@ -226,6 +229,7 @@ function processStockReceive(payload) {
   var amount = Number(req.amount) || qtyBase * (Number(product.Cost) || 0);
 
   ensureColumn("LEDGER", "ReceiptID");
+  ensureColumn("LEDGER", "ProductName");
   appendRecord("LEDGER", {
     TxnID: txnId,
     ReceiptID: txnId,
@@ -247,7 +251,8 @@ function processStockReceive(payload) {
     ReceivedByUserId: req.receivedByUserId || "",
     Actor: payload.actor,
     Status: "RECEIVED",
-    Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : ""].filter(Boolean).join(" | ")
+    Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : ""].filter(Boolean).join(" | "),
+    ProductName: product.Name
   });
 
   // The price actually paid is the most current cost there is -- keep the catalogue in step with
@@ -321,6 +326,7 @@ function processStockReceiveLines(payload) {
   ensureColumn("LEDGER", "GSTPercent");
   ensureColumn("LEDGER", "GSTAmount");
   ensureColumn("LEDGER", "ReceiptID");
+  ensureColumn("LEDGER", "ProductName");
 
   var firstTxn = nextId("TXN");
   var bill = null;
@@ -339,7 +345,8 @@ function processStockReceiveLines(payload) {
       ProductID: line.productId, Qty: line.qty, UOM: line.product.PurchaseUOM || line.product.IssueUOM, QtyBase: line.qtyBase,
       LocationID: line.locationId, PORef: line.poId, VendorID: req.vendorId, InvoiceNo: req.invoiceNo || "", Amount: amount, GSTPercent: line.gst, GSTAmount: gstAmount,
       BillPhotoURL: bill ? bill.url : "", ReceivedByUserId: req.receivedByUserId || "",
-      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", discounted === "" ? "" : "Discounted price ₹" + discounted].filter(Boolean).join(" | ")
+      Actor: payload.actor, Status: "RECEIVED", Notes: [String(req.notes || "").trim(), req.receivedByName ? "Received by: " + String(req.receivedByName).trim() : "", discounted === "" ? "" : "Discounted price ₹" + discounted].filter(Boolean).join(" | "),
+      ProductName: line.product.Name
     };
   });
   appendRecords("LEDGER", rows);
@@ -431,6 +438,7 @@ function processPurchaseRequest(payload) {
 
   var requestId = nextId("PR");
 
+  ensureColumn("REQUESTS", "ProductName");
   appendRecord("REQUESTS", {
     RequestID: requestId,
     Date: new Date(),
@@ -445,7 +453,8 @@ function processPurchaseRequest(payload) {
     ApprovedAt: approvedBy ? new Date() : "",
     Actor: payload.actor,
     Notes: req.notes || "",
-    Source: requestSource
+    Source: requestSource,
+    ProductName: product ? product.Name : newProductName
   });
 
   audit(payload.actor, "purchase.request", requestId, {
@@ -486,7 +495,7 @@ function processPurchaseRequestLines(payload) {
     if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
     var qty = positiveQuantity(line.qty, product, false);
     var est = qty * (Number(product.Cost) || 0);
-    return { productId: line.productId, qty: qty, est: est };
+    return { productId: line.productId, qty: qty, est: est, productName: product.Name };
   });
   var totalEst = Number(req.estimatedValue) || prepared.reduce(function (sum, line) { return sum + line.est; }, 0);
   var threshold = getConfigNumber("ApprovalThreshold", 5000);
@@ -500,13 +509,14 @@ function processPurchaseRequestLines(payload) {
     if (totalEst >= threshold && !approvedBy) throw new Error("VALIDATION: This is over the ₹" + threshold + " threshold — record who approved it before logging.");
     status = "OPEN";
   }
+  ensureColumn("REQUESTS", "ProductName");
   var ids = prepared.map(function (line) {
     var requestId = nextId("PR");
     appendRecord("REQUESTS", {
       RequestID: requestId, Date: new Date(), ProductID: line.productId, NewProductName: "",
       Qty: line.qty, RequestedBy: req.requestedByUserId || "", Urgency: req.urgency || "Normal",
       EstValue: line.est, Status: status, ApprovedBy: approvedBy, ApprovedAt: approvedBy ? new Date() : "",
-      Actor: payload.actor, Notes: req.notes || "", Source: requestSource
+      Actor: payload.actor, Notes: req.notes || "", Source: requestSource, ProductName: line.productName
     });
     return requestId;
   });
@@ -659,20 +669,21 @@ function processStockHandover(payload) {
   var now = resolveTxnDate(req);
   var qtyBase = toBaseQty(product, qty, false);
 
+  ensureColumn("LEDGER", "ProductName");
   appendRecords("LEDGER", [
     {
       TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1,
       ProductID: req.productId, Qty: qty, UOM: product.IssueUOM, QtyBase: qtyBase,
       LocationID: fromLocationId, HandoverID: handoverId,
       PersonID: req.toUserId || "", Actor: payload.actor,
-      Status: "PENDING_CONFIRM", Notes: req.notes || ""
+      Status: "PENDING_CONFIRM", Notes: req.notes || "", ProductName: product.Name
     },
     {
       TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1,
       ProductID: req.productId, Qty: qty, UOM: product.IssueUOM, QtyBase: qtyBase,
       LocationID: toLocationId, HandoverID: handoverId,
       PersonID: req.toUserId || "", Actor: payload.actor,
-      Status: "PENDING_CONFIRM", Notes: req.notes || ""
+      Status: "PENDING_CONFIRM", Notes: req.notes || "", ProductName: product.Name
     }
   ]);
 
@@ -717,11 +728,12 @@ function processStockHandoverLines(payload) {
     return { product: product, productId: line.productId, qty: qty, qtyBase: toBaseQty(product, qty, false), requestId: String(line.requestId || "").trim() };
   });
   var now = resolveTxnDate(req);
+  ensureColumn("LEDGER", "ProductName");
   var ids = prepared.map(function (line) {
     var handoverId = nextId("HND");
     appendRecords("LEDGER", [
-      { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: fromLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "" },
-      { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: toLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "" }
+      { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: fromLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "", ProductName: line.product.Name },
+      { TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty, UOM: line.product.IssueUOM, QtyBase: line.qtyBase, LocationID: toLocationId, HandoverID: handoverId, PersonID: req.toUserId || "", Actor: payload.actor, Status: "PENDING_CONFIRM", Notes: req.notes || "", ProductName: line.product.Name }
     ]);
     return handoverId;
   });
@@ -870,12 +882,14 @@ function processOpeningStockSubmit(payload) {
   }
 
   var countId = nextId("OPN");
+  ensureColumn("OPENING_COUNTS", "ProductName");
   appendRecord("OPENING_COUNTS", {
     CountID: countId, Date: new Date(), ProductID: req.productId, Qty: qty,
     LocationID: locationId, CountedBy: payload.actor, Status: "PENDING",
     Notes: req.notes || "", QtyOrdered: req.qtyOrdered || "",
     QtyReceived: req.qtyReceived == null ? qty : Number(req.qtyReceived),
-    CountUOM: req.countUom || product.IssueUOM || ""
+    CountUOM: req.countUom || product.IssueUOM || "",
+    ProductName: product.Name
   });
   audit(payload.actor, "opening.submit", countId, { productId: req.productId, qty: qty, locationId: locationId });
   return { countId: countId, status: "PENDING", locationId: locationId };
@@ -937,12 +951,14 @@ function processOpeningStockApprove(payload) {
         String(ledgerRow.HandoverID) === String(req.countId);
     });
     if (!alreadyPosted) {
+      ensureColumn("LEDGER", "ProductName");
       appendRecord("LEDGER", {
         TxnID: nextId("TXN"), Date: new Date(), Type: "OPENING", Direction: 1,
         ProductID: row[t.idx.ProductID], Qty: Number(row[t.idx.Qty]) || 0,
         UOM: product ? product.IssueUOM : "", QtyBase: Number(row[t.idx.Qty]) || 0,
         LocationID: row[t.idx.LocationID], HandoverID: req.countId,
-        Actor: payload.actor, Status: "POSTED", Notes: "Opening count " + req.countId
+        Actor: payload.actor, Status: "POSTED", Notes: "Opening count " + req.countId,
+        ProductName: product ? product.Name : row[t.idx.ProductID]
       });
     }
   }

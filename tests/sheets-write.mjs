@@ -170,19 +170,19 @@ function fixture({ role = 'PurchaseCoordinator', active = true } = {}) {
       ],
     },
     LEDGER: {
-      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'ProductPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit', 'ReceivedByUserId'],
+      headers: ['TxnID', 'Date', 'Type', 'Direction', 'ProductID', 'Qty', 'UOM', 'QtyBase', 'LocationID', 'VendorID', 'PORef', 'InvoiceNo', 'Amount', 'GSTAmount', 'GSTPercent', 'ReceiptID', 'Actor', 'Status', 'Notes', 'BillPhotoURL', 'ProductPhotoURL', 'PersonID', 'HandoverID', 'CategoryID', 'BusinessUnit', 'ReceivedByUserId', 'ProductName'],
       rows: [],
     },
-    PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID'], rows: [] },
+    PURCHASE_ORDERS: { headers: ['OrderID', 'Date', 'ProductID', 'VendorID', 'QtyOrdered', 'UOM', 'RequestID', 'Status', 'Actor', 'Notes', 'DeliveryLocationID', 'UnitPrice', 'BatchID', 'ProductName'], rows: [] },
     REQUESTS: {
-      headers: ['RequestID', 'Date', 'ProductID', 'NewProductName', 'Qty', 'RequestedBy', 'Urgency', 'EstValue', 'Status', 'ApprovedBy', 'ApprovedAt', 'Actor', 'Notes', 'Source'],
+      headers: ['RequestID', 'Date', 'ProductID', 'NewProductName', 'Qty', 'RequestedBy', 'Urgency', 'EstValue', 'Status', 'ApprovedBy', 'ApprovedAt', 'Actor', 'Notes', 'Source', 'ProductName'],
       rows: [
         ['REQ-1', 0, 'PRD-0001', '', 1, 'U1', 'Normal', 2, 'OPEN', '', '', 'purchase@ahl.com', '', 'APP'],
         ['REQ-2', 0, 'PRD-0001', '', 3, 'U1', 'Normal', 6, 'PENDING_APPROVAL', '', '', 'purchase@ahl.com', '', 'APP'],
       ],
     },
     OPENING_COUNTS: {
-      headers: ['CountID', 'Date', 'ProductID', 'Qty', 'LocationID', 'CountedBy', 'Status', 'Notes', 'QtyOrdered', 'QtyReceived', 'CountUOM', 'ReviewedBy', 'ReviewedAt'],
+      headers: ['CountID', 'Date', 'ProductID', 'Qty', 'LocationID', 'CountedBy', 'Status', 'Notes', 'QtyOrdered', 'QtyReceived', 'CountUOM', 'ReviewedBy', 'ReviewedAt', 'ProductName'],
       rows: [],
     },
     OPERATIONS: { headers: ['OperationID', 'Date', 'Actor', 'Action', 'Status', 'Result'], rows: [] },
@@ -384,6 +384,7 @@ await (async () => {
   const headers = tabs.PURCHASE_ORDERS.headers, row = tabs.PURCHASE_ORDERS.rows[0];
   assert.equal(row[headers.indexOf('Status')], 'ORDERED');
   assert.equal(row[headers.indexOf('BatchID')], result.orderId); // single order's own id is its batch id
+  assert.equal(row[headers.indexOf('ProductName')], 'Shampoo');
 })();
 await (async () => {
   const { writeDirect } = fixture();
@@ -708,6 +709,7 @@ await (async () => {
   const h = tabs.LEDGER.headers, issueRow = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'ISSUE');
   assert.equal(issueRow[h.indexOf('Direction')], -1);
   assert.equal(issueRow[h.indexOf('HandoverID')], result.handoverId);
+  assert.equal(issueRow[h.indexOf('ProductName')], 'Shampoo'); // readable in the sheet without looking up the ID
 })();
 await (async () => {
   const { writeDirect, tabs } = fixture();
