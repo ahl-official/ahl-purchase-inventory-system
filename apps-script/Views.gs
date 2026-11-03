@@ -56,26 +56,31 @@ function inventoryViewDefinitions(headers) {
     l('Notes')
   ],[l('Type')+'="ISSUE"',l('LocationID')+'="LOC-02"',l('Status')+'<>"VOID"'])],dateColumns:[0]};
   defs.REPORTS={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,[l('TxnID')+'<>""'])],dateColumns:[0]};
-  defs.PURCHASE_TRACKER={headers:['Order ID','Invoice No','Product Name','Vendor','Ordered','Received','Outstanding','Unit','Status','Date','Request ID','Amount (Rs)','GST (Rs)','Total (Rs)'],formulas:[
-    // Oldest order first, by the order's own Date -- every other column keys off this spilled
-    // Order ID list, so sorting it here re-aligns the whole row, not sheet append order.
+  // One row per order. Invoice number, bill and amounts come from the receipts
+  // linked by PORef, so accounts and purchasing share this tab.
+  var receivedQty='SUMIFS('+l('Qty')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+  var receivedAmt='SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+  var receivedGst='SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+  function orderField(col){return 'IFNA(XLOOKUP(id,'+po('OrderID')+','+po(col)+'),"")';}
+  defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Bill','Note'],formulas:[
     '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),TRUE),"")',
-    // The vendor's bill: an order can be received across more than one invoice, so every distinct
-    // invoice number recorded against it is joined together rather than picking just one.
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),""))))',
-    array('IF(A2:A="","",'+lookup(lookup('A2:A','PURCHASE_ORDERS','OrderID','ProductID'),'PRODUCTS','ProductID','Name')+')'),
-    array('IF(A2:A="","",'+lookup(lookup('A2:A','PURCHASE_ORDERS','OrderID','VendorID'),'LISTS','Code','Name')+')'),
-    array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','QtyOrdered')+')'),
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('Qty')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))',
-    array('IF(A2:A="","",IF('+lookup('A2:A','PURCHASE_ORDERS','OrderID','Status')+'="CANCELLED",0,IF(E2:E>F2:F,E2:E-F2:F,0)))'),
-    array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','UOM')+')'),
-    array('IF(A2:A="","",IF('+lookup('A2:A','PURCHASE_ORDERS','OrderID','Status')+'="CANCELLED","CANCELLED",IF(F2:F>=E2:E,"RECEIVED",IF(F2:F>0,"PARTIAL","ORDERED")))))'),
-    array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','Date')+')'),
-    array('IF(A2:A="","",'+lookup('A2:A','PURCHASE_ORDERS','OrderID','RequestID')+')'),
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")+SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))'
-  ],dateColumns:[9]};
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(MIN(FILTER('+l('Date')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID")),""))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),"Not entered")))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('VendorID')+'),'+ref('LISTS','Code')+','+ref('LISTS','Name')+'),""))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('ProductID')+'),'+ref('PRODUCTS','ProductID')+','+ref('PRODUCTS','Name')+'),'+orderField('ProductName')+'))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+po('OrderID')+','+po('QtyOrdered')+'),0))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedQty+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+orderField('Status')+'="CANCELLED",0,IF('+orderField('QtyOrdered')+'>'+receivedQty+','+orderField('QtyOrdered')+'-'+receivedQty+',0)))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('UOM')+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+orderField('Status')+'="CANCELLED","CANCELLED",IF('+receivedQty+'>='+orderField('QtyOrdered')+',"RECEIVED",IF('+receivedQty+'>0,"PARTIAL","ORDERED"))))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedAmt+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedAmt+'<=0,"",ROUND('+receivedGst+'/'+receivedAmt+'*100,2)))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedGst+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedAmt+'+'+receivedGst+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",LET(link,IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('BillPhotoURL')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('BillPhotoURL')+'<>""))),""),IF(link="","No bill attached",link))))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(" | ",TRUE,UNIQUE(FILTER('+l('Notes')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('Notes')+'<>""))),""))))'
+  ],dateColumns:[1,2]};
   return defs;
 }
 
