@@ -11,26 +11,55 @@ function inventoryViewDefinitions(headers) {
   ['SATVIK','HITESH'].forEach(function(person){
     var loc=person==='SATVIK'?'LOC-01':'LOC-02';
     defs['OPENING_'+person]={headers:['Product Name','Qty Ordered (reference)','Opening Qty','Unit','Short Qty (reference)','Status','Count Date','Count ID','Notes'],formulas:[filter([lookup(o('ProductID'),'PRODUCTS','ProductID','Name'),o('QtyOrdered'),o('Qty'),lookup(o('ProductID'),'PRODUCTS','ProductID','IssueUOM'),'IF('+o('QtyOrdered')+'="","",'+o('QtyOrdered')+'-'+o('QtyReceived')+')',o('Status'),o('Date'),o('CountID'),o('Notes')],[o('LocationID')+'="'+loc+'"'])],dateColumns:[6]};
-    defs['STOCK_'+person]={headers:['Product ID','Product Name','Unit','On Hand','Reserved','Available'],formulas:[
-      '=IFNA(FILTER('+p('ProductID')+','+p('Active')+'=TRUE),"")',
-      array('IF(A2:A="","",'+lookup('A2:A','PRODUCTS','ProductID','Name')+')'),
-      array('IF(A2:A="","",'+lookup('A2:A','PRODUCTS','ProductID','IssueUOM')+')'),
-      '=MAP(A2:A,LAMBDA(id,IF(id="","",'+sum(1,loc,false)+'-'+sum(-1,loc,false)+')))',
-      '=MAP(A2:A,LAMBDA(id,IF(id="","",'+sum(-1,loc,true)+')))',
-      array('IF(A2:A="","",D2:D-E2:E)')
-    ],dateColumns:[]};
+    var ids='FILTER('+p('ProductID')+','+p('Active')+'=TRUE)';
+    var stockHeaders=['Product','Unit','On Hand','Reserved','Available'];
+    var stockFormulas=[
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('Name')+'),id))))',
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('IssueUOM')+'),""))))',
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",'+sum(1,loc,false)+'-'+sum(-1,loc,false)+')))',
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",'+sum(-1,loc,true)+')))',
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",('+sum(1,loc,false)+'-'+sum(-1,loc,false)+')-('+sum(-1,loc,true)+'))))'
+    ];
+    var stockDates=[];
+    if(person==='HITESH'){
+      stockHeaders=stockHeaders.concat(['','Date','Product','Movement','In / Out','Quantity','Unit','Technician','Category','Business unit','Note']);
+      stockFormulas.push('=""');
+      stockFormulas.push(array('IFERROR(SORT(FILTER({'+[
+        l('Date'),
+        lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),
+        'IF('+l('Type')+'="ISSUE","Issued",IF('+l('Type')+'="RECEIPT","Received",IF('+l('Type')+'="HANDOVER","Handover",IF('+l('Type')+'="RETAIL_SALE","Retail sale",IF('+l('Type')+'="COUNT_IN","Count in",IF('+l('Type')+'="COUNT_OUT","Count out",IF('+l('Type')+'="RETURN","Returned",IF('+l('Type')+'="DAMAGE","Damaged",'+l('Type')+'))))))))',
+        'IF('+l('Direction')+'=1,"In","Out")',
+        l('QtyBase'),
+        lookup(l('ProductID'),'PRODUCTS','ProductID','IssueUOM'),
+        'IF('+l('PersonID')+'="","",'+lookup(l('PersonID'),'PEOPLE','UserID','Name')+')',
+        'IF('+l('CategoryID')+'="","",'+lookup(l('CategoryID'),'LISTS','Code','Name')+')',
+        l('BusinessUnit'),
+        l('Notes')
+      ].join(',')+'},'+l('LocationID')+'="'+loc+'",'+l('Status')+'<>"VOID",'+l('TxnID')+'<>""),1,TRUE),"")));
+      stockDates=[6];
+    }
+    defs['STOCK_'+person]={headers:stockHeaders,formulas:stockFormulas,dateColumns:stockDates};
   });
-  var movement=[l('Date'),lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),l('Qty'),l('UOM'),lookup(l('LocationID'),'LISTS','Code','Name'),l('PersonID'),l('Type'),l('Status'),l('HandoverID'),l('Notes')];
-  // Newest first, by the actual Date column (index 1 of the FILTER result) -- not sheet order,
-  // since a backdated entry must land where it belongs chronologically, not at the bottom.
-  function sortedFilter(parts,conditions){return array('IFERROR(SORT(FILTER({'+parts.join(',')+'},'+conditions.join(',')+'),1,FALSE),"")');}
+  var movement=[l('Date'),lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),l('Qty'),l('UOM'),lookup(l('LocationID'),'LISTS','Code','Name'),lookup(l('PersonID'),'PEOPLE','UserID','Name'),l('Type'),l('Status'),l('HandoverID'),l('Notes')];
+  // Oldest first, by the actual Date column, so backfilled records sit in chronological order.
+  function sortedFilter(parts,conditions){return array('IFERROR(SORT(FILTER({'+parts.join(',')+'},'+conditions.join(',')+'),1,TRUE),"")');}
   defs.HANDOVER_TRACKER={headers:['Date','Product Name','Qty','Unit','Destination','Receiver','Type','Status','Handover ID','Notes'],formulas:[sortedFilter(movement,[l('Type')+'="HANDOVER"',l('Direction')+'=1'])],dateColumns:[0]};
-  defs.ISSUE_HISTORY={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,['('+l('Type')+'="ISSUE")+('+l('Type')+'="RETURN")+('+l('Type')+'="DAMAGE")'])],dateColumns:[0]};
+  defs.ISSUE_HISTORY={headers:['Date','Product Name','Qty','Unit','Location','Technician','Type','Status','Reference','Notes'],formulas:[filter(movement,['('+l('Type')+'="ISSUE")+('+l('Type')+'="RETURN")+('+l('Type')+'="DAMAGE")'])],dateColumns:[0]};
+  defs.SALON_ISSUES={headers:['Date','Product','Quantity','Unit','Technician','Category','Business unit','Note'],formulas:[sortedFilter([
+    l('Date'),
+    lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),
+    l('Qty'),
+    l('UOM'),
+    lookup(l('PersonID'),'PEOPLE','UserID','Name'),
+    lookup(l('CategoryID'),'LISTS','Code','Name'),
+    l('BusinessUnit'),
+    l('Notes')
+  ],[l('Type')+'="ISSUE"',l('LocationID')+'="LOC-02"',l('Status')+'<>"VOID"'])],dateColumns:[0]};
   defs.REPORTS={headers:['Date','Product Name','Qty','Unit','Location','Person','Type','Status','Reference','Notes'],formulas:[filter(movement,[l('TxnID')+'<>""'])],dateColumns:[0]};
   defs.PURCHASE_TRACKER={headers:['Order ID','Invoice No','Product Name','Vendor','Ordered','Received','Outstanding','Unit','Status','Date','Request ID','Amount (Rs)','GST (Rs)','Total (Rs)'],formulas:[
-    // Newest order first, by the order's own Date -- every other column keys off this spilled
+    // Oldest order first, by the order's own Date -- every other column keys off this spilled
     // Order ID list, so sorting it here re-aligns the whole row, not sheet append order.
-    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),FALSE),"")',
+    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),TRUE),"")',
     // The vendor's bill: an order can be received across more than one invoice, so every distinct
     // invoice number recorded against it is joined together rather than picking just one.
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),""))))',
@@ -54,7 +83,7 @@ function inventoryViewDefinitions(headers) {
 function upgradeInventoryDatabase() {
   var ss=db();
   Object.keys(SCHEMA).forEach(function(name){if(name.indexOf('OPENING_')!==0 || name==='OPENING_COUNTS')ensureTab(ss,name,SCHEMA[name]);});
-  var headers={};['PRODUCTS','LEDGER','OPENING_COUNTS','PURCHASE_ORDERS','LISTS'].forEach(function(n){headers[n]=table(n).headers;});
+  var headers={};['PRODUCTS','LEDGER','OPENING_COUNTS','PURCHASE_ORDERS','LISTS','PEOPLE'].forEach(function(n){headers[n]=table(n).headers;});
   var views=inventoryViewDefinitions(headers);
   Object.keys(views).forEach(function(name){
     var v=views[name];ensureTab(ss,name,v.headers);var sheet=ss.getSheetByName(name);

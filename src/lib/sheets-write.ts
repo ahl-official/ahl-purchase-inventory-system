@@ -112,15 +112,14 @@ async function appendRow(token: string, sheetName: string, record: Record<string
   if (SORT_BY_DATE_TABS.has(sheetName)) await sortTabByDate(token, sheetName, headers);
 }
 
-// LEDGER/PURCHASE_ORDERS are kept physically ordered by Date -- a backdated or backfilled entry
-// must land where it belongs chronologically, not wherever it was appended. Matches Db.gs's
-// sortTabByDate, called from the same place (right after appendRecords/appendRow).
-const SORT_BY_DATE_TABS = new Set(["LEDGER", "PURCHASE_ORDERS"]);
+// Dated record tabs stay oldest-first, so a backfilled entry lands on its real date
+// instead of at the bottom. Matches Db.gs sortTabByDate.
+const SORT_BY_DATE_TABS = new Set(["LEDGER", "PURCHASE_ORDERS", "REQUESTS", "OPENING_COUNTS", "OPERATIONS", "AUDIT"]);
 
-/** Sorts a tab's data rows by its Date column, oldest first. sortRange only reorders whole rows
- * -- no cell is ever dropped or overwritten -- so it is safe to run after every append. */
+/** Sorts a tab's data rows by Date (or Timestamp on AUDIT), oldest first. sortRange only
+ * reorders whole rows -- no cell is ever dropped or overwritten -- so it is safe after every append. */
 async function sortTabByDate(token: string, sheetName: string, headers: string[]): Promise<void> {
-  const dateIdx = headers.indexOf("Date");
+  const dateIdx = headers.indexOf("Date") >= 0 ? headers.indexOf("Date") : headers.indexOf("Timestamp");
   if (dateIdx < 0) return;
   const { sheetId } = await getSheetGrid(token, sheetName);
   await sheetsFetch(token, ":batchUpdate", {

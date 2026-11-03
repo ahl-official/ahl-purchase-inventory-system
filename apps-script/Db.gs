@@ -132,15 +132,16 @@ function appendRecords(name, records) {
   return records;
 }
 
-// LEDGER/PURCHASE_ORDERS are kept physically ordered by Date -- a backdated or backfilled entry
-// must land where it belongs chronologically, not wherever it was appended.
-var SORT_BY_DATE_TABS = { LEDGER: true, PURCHASE_ORDERS: true };
+// Dated record tabs stay oldest-first, so a backfilled entry lands on its real date
+// instead of at the bottom.
+var SORT_BY_DATE_TABS = { LEDGER: true, PURCHASE_ORDERS: true, REQUESTS: true, OPENING_COUNTS: true, OPERATIONS: true, AUDIT: true };
 
-/** Sorts a tab's data rows by its Date column, oldest first. Only reorders whole rows -- no cell
-    is ever dropped or overwritten -- so it is safe to run after every append. */
+/** Sorts a tab's data rows by Date (or Timestamp on AUDIT), oldest first. Only reorders whole
+    rows -- no cell is ever dropped or overwritten -- so it is safe to run after every append. */
 function sortTabByDate(name) {
   var t = table(name);
   var dateCol = t.idx['Date'];
+  if (dateCol === undefined) dateCol = t.idx['Timestamp'];
   if (dateCol === undefined) return;
   var lastRow = t.sheet.getLastRow();
   if (lastRow < 3) return;
