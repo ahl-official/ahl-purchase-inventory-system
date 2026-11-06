@@ -35,7 +35,7 @@ function inventoryViewDefinitions(headers) {
         'IF('+l('CategoryID')+'="","",'+lookup(l('CategoryID'),'LISTS','Code','Name')+')',
         l('BusinessUnit'),
         l('Notes')
-      ].join(',')+'},'+l('LocationID')+'="'+loc+'",'+l('Status')+'<>"VOID",'+l('TxnID')+'<>""),1,TRUE),"")));
+      ].join(',')+'},'+l('LocationID')+'="'+loc+'",'+l('Status')+'<>"VOID",'+l('TxnID')+'<>""),1,TRUE),"")'));
       stockDates=[6];
     }
     defs['STOCK_'+person]={headers:stockHeaders,formulas:stockFormulas,dateColumns:stockDates};
