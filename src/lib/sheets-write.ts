@@ -947,7 +947,7 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
   const qty = positiveQuantity(data.qty, product, false);
   if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Record the reason.");
   const kind = String(data.kind || "");
-  if (!["RETURN", "DAMAGE", "COUNT_IN", "COUNT_OUT", "DISTRIBUTION"].includes(kind)) throw new Error("VALIDATION: Select a correction type.");
+  if (!["RETURN", "DAMAGE", "COUNT_IN", "COUNT_OUT", "DISTRIBUTION", "VENDOR_RETURN"].includes(kind)) throw new Error("VALIDATION: Select a correction type.");
   if (/^COUNT_/.test(kind) && role !== "Admin") throw new Error("FORBIDDEN: Only management can adjust a physical count.");
   const direction = kind === "RETURN" || kind === "COUNT_IN" ? 1 : -1;
   if (direction < 0 && qty > availableBalance(ctx, data.productId, loc)) throw new Error("INSUFFICIENT_STOCK: Correction exceeds available stock.");
@@ -958,6 +958,32 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
     }
     const returned = ctx.ledger.filter((l) => l.Type === "RETURN" && l.PORef === data.sourceTxnId && l.Status !== "VOID").reduce((s, l) => s + Number(l.QtyBase), 0);
     if (returned + qty > Number(source.QtyBase)) throw new Error("VALIDATION: Return exceeds the quantity originally issued.");
+  }
+  // VENDOR_RETURN: goods handed back to the vendor (point-of-receiving rejection, a standalone
+  // return, or a QC edit discovered later) -- unlike RETURN (a technician handing unused stock
+  // back), this reverses a RECEIPT, not an ISSUE, and carries the vendor's Invoice/Amount/GST so
+  // the purchase tracker can show what's actually still payable. Capped at the order+product
+  // level (sourceReceipt.PORef), not per-individual-receipt, so a product delivered across two
+  // invoices on the same order still can't be over-returned.
+  let vendorReturnPORef = "", vendorReturnInvoiceNo = "", vendorReturnAmount = 0, vendorReturnGst = 0;
+  if (kind === "VENDOR_RETURN") {
+    const source = findRecord(ctx.ledger, "TxnID", data.sourceTxnId);
+    if (!source || source.Type !== "RECEIPT" || source.Status === "VOID" || source.ProductID !== data.productId || source.LocationID !== loc) {
+      throw new Error("VALIDATION: Select the original delivery for this product at this location.");
+    }
+    vendorReturnPORef = String(source.PORef || "");
+    vendorReturnInvoiceNo = String(source.InvoiceNo || "");
+    const receivedTotal = ctx.ledger.filter((l) => l.Type === "RECEIPT" && l.Status !== "VOID" && l.ProductID === data.productId && String(l.PORef || "") === vendorReturnPORef).reduce((s, l) => s + Number(l.QtyBase), 0);
+    const returnedTotal = ctx.ledger.filter((l) => l.Type === "VENDOR_RETURN" && l.Status !== "VOID" && l.ProductID === data.productId && String(l.PORef || "") === vendorReturnPORef).reduce((s, l) => s + Number(l.QtyBase), 0);
+    if (returnedTotal + qty > receivedTotal) throw new Error("VALIDATION: Return exceeds the quantity received on this order.");
+    const sourceQty = Number(source.QtyBase) || 0;
+    const ratio = sourceQty > 0 ? qty / sourceQty : 0;
+    const defaultAmount = Math.round(Number(source.Amount || 0) * ratio * 100) / 100;
+    const defaultGst = Math.round(Number(source.GSTAmount || 0) * ratio * 100) / 100;
+    vendorReturnAmount = data.amount === "" || data.amount === undefined || data.amount === null ? defaultAmount : Number(data.amount);
+    vendorReturnGst = data.gstAmount === "" || data.gstAmount === undefined || data.gstAmount === null ? defaultGst : Number(data.gstAmount);
+    if (!isFinite(vendorReturnAmount) || vendorReturnAmount < 0) throw new Error("VALIDATION: Enter a valid deductible amount.");
+    if (!isFinite(vendorReturnGst) || vendorReturnGst < 0) throw new Error("VALIDATION: Enter a valid GST amount.");
   }
   // DISTRIBUTION: stock given to someone outside the studio network (Marketing, a doctor, a
   // one-off recipient) -- a one-sided deduction, not a two-sided handover, since there is no
@@ -972,17 +998,27 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
   const id = nextId("TXN");
   const record: Record<string, unknown> = {
     TxnID: id, Date: dateToSerial(resolveTxnDate(data)), Type: kind, Direction: direction, ProductID: data.productId,
-    Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc, PORef: data.sourceTxnId || "", Actor: actor, Status: "POSTED",
-    Notes: kind === "DISTRIBUTION" ? `Given to: ${recipientName}${data.notes ? ` | ${data.notes}` : ""}` : data.notes,
+    Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc,
+    PORef: kind === "VENDOR_RETURN" ? vendorReturnPORef : (data.sourceTxnId || ""),
+    Actor: actor, Status: "POSTED",
+    Notes: kind === "DISTRIBUTION" ? `Given to: ${recipientName}${data.notes ? ` | ${data.notes}` : ""}`
+      : kind === "VENDOR_RETURN" ? `Returned against ${data.sourceTxnId}${data.notes ? ` | ${data.notes}` : ""}`
+      : data.notes,
     ProductName: product.Name,
   };
   if (kind === "DISTRIBUTION") {
     await ensureColumn(token, "LEDGER", "RecipientID");
     record.RecipientID = data.recipientId;
   }
+  if (kind === "VENDOR_RETURN") {
+    record.InvoiceNo = vendorReturnInvoiceNo;
+    record.Amount = vendorReturnAmount;
+    record.GSTAmount = vendorReturnGst;
+    record.TotalAmount = Math.round((vendorReturnAmount + vendorReturnGst) * 100) / 100;
+  }
   await appendRow(token, "LEDGER", record);
   await auditWrite(token, actor, "stock.adjust", id, data);
-  return { txnId: id };
+  return { txnId: id, deductedAmount: kind === "VENDOR_RETURN" ? vendorReturnAmount + vendorReturnGst : undefined };
 }
 
 /** Shared receiver/destination validation for stock.handover (single and multi-line). Ported 1:1 from Ledger.gs. */

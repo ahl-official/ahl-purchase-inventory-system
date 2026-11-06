@@ -61,8 +61,12 @@ function inventoryViewDefinitions(headers) {
   var receivedQty='SUMIFS('+l('Qty')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
   var receivedAmt='SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
   var receivedGst='SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+  // Goods handed back to the vendor (VENDOR_RETURN) reduce what's actually still owed, without
+  // touching Received/Outstanding above -- a return doesn't mean the vendor owes more units.
+  var returnedAmt='SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
+  var returnedGst='SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
   function orderField(col){return 'IFNA(XLOOKUP(id,'+po('OrderID')+','+po(col)+'),"")';}
-  defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Bill','Note'],formulas:[
+  defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Returned (Rs)','Payable (Rs)','Bill','Note'],formulas:[
     '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),TRUE),"")',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(MIN(FILTER('+l('Date')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID")),""))))',
@@ -78,6 +82,8 @@ function inventoryViewDefinitions(headers) {
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedAmt+'<=0,"",ROUND('+receivedGst+'/'+receivedAmt+'*100,2)))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedGst+')))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedAmt+'+'+receivedGst+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+returnedAmt+'+'+returnedGst+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",('+receivedAmt+'+'+receivedGst+')-('+returnedAmt+'+'+returnedGst+'))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",LET(link,IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('BillPhotoURL')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('BillPhotoURL')+'<>""))),""),IF(link="","No bill attached",link))))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(" | ",TRUE,UNIQUE(FILTER('+l('Notes')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('Notes')+'<>""))),""))))'
   ],dateColumns:[1,2]};

@@ -821,6 +821,60 @@ await (async () => {
   assert.match(result.txnId, /^TXN-/);
   await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 3, kind: 'RETURN', sourceTxnId: 'ISSUE1', notes: 'Too much', operationId: opId() }), /VALIDATION/);
 })();
+
+// ---- stock.adjust (VENDOR_RETURN) ----
+await (async () => {
+  // Reverses a RECEIPT (not an ISSUE -- that's what RETURN is for), and the deductible is
+  // computed proportionally from that receipt line's own Amount/GST.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'RCPT1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 10, QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED', PORef: 'PO-1', InvoiceNo: 'INV-9', Amount: 1000, GSTAmount: 180 }));
+  const result = await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 2, kind: 'VENDOR_RETURN', sourceTxnId: 'RCPT1', notes: 'Two units arrived damaged', operationId: opId() });
+  assert.match(result.txnId, /^TXN-/);
+  assert.equal(result.deductedAmount, 236);
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'VENDOR_RETURN');
+  assert.equal(row[h.indexOf('Direction')], -1);
+  assert.equal(row[h.indexOf('PORef')], 'PO-1'); // rolls up into the order, not the receipt's own TxnID
+  assert.equal(row[h.indexOf('InvoiceNo')], 'INV-9');
+  assert.equal(row[h.indexOf('Amount')], 200); // 2/10 of 1000
+  assert.equal(row[h.indexOf('GSTAmount')], 36); // 2/10 of 180
+  assert.equal(row[h.indexOf('TotalAmount')], 236);
+  assert.match(String(row[h.indexOf('Notes')]), /Returned against RCPT1 \| Two units arrived damaged/);
+})();
+await (async () => {
+  // Capped at what was received against that order+product in total, not per return attempt.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'RCPT1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 10, QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED', PORef: 'PO-1', Amount: 1000 }));
+  await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 7, kind: 'VENDOR_RETURN', sourceTxnId: 'RCPT1', notes: 'Partial reject', operationId: opId() });
+  // Only 3 units are left either way (3 remain on hand, and only 3 more could ever have been
+  // received) -- whichever guard catches it first, over-returning must be refused.
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 4, kind: 'VENDOR_RETURN', sourceTxnId: 'RCPT1', notes: 'Too much', operationId: opId() }), /INSUFFICIENT_STOCK|VALIDATION/);
+})();
+await (async () => {
+  // The order+product cap is distinct from the stock-on-hand cap: even with plenty of stock
+  // available (from a different order), you can't return more than THIS order actually delivered.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'RCPT1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 10, QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED', PORef: 'PO-1', Amount: 1000 }));
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'RCPT2', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 50, QtyBase: 50, LocationID: 'LOC-01', Status: 'RECEIVED', PORef: 'PO-2', Amount: 5000 }));
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 11, kind: 'VENDOR_RETURN', sourceTxnId: 'RCPT1', notes: 'More than PO-1 ever delivered', operationId: opId() }), /VALIDATION: Return exceeds/);
+})();
+await (async () => {
+  // Must point at a RECEIPT, not e.g. an ISSUE -- that's what RETURN is for.
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'RCPT0', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED' }));
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'ISSUE1', Type: 'ISSUE', Direction: -1, ProductID: 'PRD-0001', QtyBase: 5, LocationID: 'LOC-01', Status: 'ISSUED' }));
+  await assert.rejects(() => writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 1, kind: 'VENDOR_RETURN', sourceTxnId: 'ISSUE1', notes: 'Wrong kind', operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  // An explicit amount/gstAmount override replaces the proportional default (e.g. the vendor
+  // only credited part of it).
+  const { writeDirect, tabs } = fixture();
+  tabs.LEDGER.rows.push(rowFor(tabs, 'LEDGER', { TxnID: 'RCPT1', Type: 'RECEIPT', Direction: 1, ProductID: 'PRD-0001', Qty: 10, QtyBase: 10, LocationID: 'LOC-01', Status: 'RECEIVED', PORef: 'PO-1', Amount: 1000, GSTAmount: 180 }));
+  await writeDirect('stock.adjust', 'purchase@ahl.com', { productId: 'PRD-0001', qty: 2, kind: 'VENDOR_RETURN', sourceTxnId: 'RCPT1', amount: 150, gstAmount: 27, notes: 'Vendor only credited part of it', operationId: opId() });
+  const h = tabs.LEDGER.headers, row = tabs.LEDGER.rows.find((r) => r[h.indexOf('Type')] === 'VENDOR_RETURN');
+  assert.equal(row[h.indexOf('Amount')], 150);
+  assert.equal(row[h.indexOf('GSTAmount')], 27);
+})();
+
 await (async () => {
   // DISTRIBUTION: stock given to a recipient outside the studio network -- a one-sided deduction,
   // open to the same roles as DAMAGE/RETURN (not Admin-only like COUNT_*), and it adds the

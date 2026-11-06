@@ -193,7 +193,7 @@ function processStockAdjustment(payload) {
   if(!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
   var loc=openingLocationForActor(payload.actor,r.locationId),qty=positiveQuantity(r.qty,p,false);
   if(!String(r.notes || '').trim()) throw new Error('VALIDATION: Record the reason.');
-  if(['RETURN','DAMAGE','COUNT_IN','COUNT_OUT','DISTRIBUTION'].indexOf(r.kind)<0) throw new Error('VALIDATION: Select a correction type.');
+  if(['RETURN','DAMAGE','COUNT_IN','COUNT_OUT','DISTRIBUTION','VENDOR_RETURN'].indexOf(r.kind)<0) throw new Error('VALIDATION: Select a correction type.');
   if(/^COUNT_/.test(r.kind) && role!=='Admin') throw new Error('FORBIDDEN: Only management can adjust a physical count.');
   var direction=r.kind==='RETURN' || r.kind==='COUNT_IN' ? 1:-1;
   if(direction<0 && qty>computeAvailableBalance(r.productId,loc)) throw new Error('INSUFFICIENT_STOCK: Correction exceeds available stock.');
@@ -202,6 +202,25 @@ function processStockAdjustment(payload) {
     if(!source || source.Type!=='ISSUE' || source.Status==='VOID' || source.ProductID!==r.productId || source.LocationID!==loc) throw new Error('VALIDATION: Select the original issue from this location.');
     var returned=readAll('LEDGER').filter(function(l){return l.Type==='RETURN' && l.PORef===r.sourceTxnId && l.Status!=='VOID';}).reduce(function(s,l){return s+Number(l.QtyBase);},0);
     if(returned+qty>Number(source.QtyBase)) throw new Error('VALIDATION: Return exceeds the quantity originally issued.');
+  }
+  // VENDOR_RETURN: goods handed back to the vendor -- reverses a RECEIPT, not an ISSUE, and
+  // carries the vendor's Invoice/Amount/GST so the purchase tracker can show what's still
+  // payable. Capped at the order+product level, not per-individual-receipt.
+  var vendorReturnPORef='', vendorReturnInvoiceNo='', vendorReturnAmount=0, vendorReturnGst=0;
+  if(r.kind==='VENDOR_RETURN') {
+    var vrSource=findRecord('LEDGER','TxnID',r.sourceTxnId);
+    if(!vrSource || vrSource.Type!=='RECEIPT' || vrSource.Status==='VOID' || vrSource.ProductID!==r.productId || vrSource.LocationID!==loc) throw new Error('VALIDATION: Select the original delivery for this product at this location.');
+    vendorReturnPORef=String(vrSource.PORef || '');
+    vendorReturnInvoiceNo=String(vrSource.InvoiceNo || '');
+    var vrReceived=readAll('LEDGER').filter(function(l){return l.Type==='RECEIPT' && l.Status!=='VOID' && l.ProductID===r.productId && String(l.PORef || '')===vendorReturnPORef;}).reduce(function(s,l){return s+Number(l.QtyBase);},0);
+    var vrReturned=readAll('LEDGER').filter(function(l){return l.Type==='VENDOR_RETURN' && l.Status!=='VOID' && l.ProductID===r.productId && String(l.PORef || '')===vendorReturnPORef;}).reduce(function(s,l){return s+Number(l.QtyBase);},0);
+    if(vrReturned+qty>vrReceived) throw new Error('VALIDATION: Return exceeds the quantity received on this order.');
+    var vrSourceQty=Number(vrSource.QtyBase) || 0, vrRatio=vrSourceQty>0 ? qty/vrSourceQty : 0;
+    var vrDefaultAmount=Math.round(Number(vrSource.Amount || 0)*vrRatio*100)/100, vrDefaultGst=Math.round(Number(vrSource.GSTAmount || 0)*vrRatio*100)/100;
+    vendorReturnAmount=(r.amount==='' || r.amount===undefined || r.amount===null) ? vrDefaultAmount : Number(r.amount);
+    vendorReturnGst=(r.gstAmount==='' || r.gstAmount===undefined || r.gstAmount===null) ? vrDefaultGst : Number(r.gstAmount);
+    if(!isFinite(vendorReturnAmount) || vendorReturnAmount<0) throw new Error('VALIDATION: Enter a valid deductible amount.');
+    if(!isFinite(vendorReturnGst) || vendorReturnGst<0) throw new Error('VALIDATION: Enter a valid GST amount.');
   }
   // DISTRIBUTION: stock given to someone outside the studio network (Marketing, a doctor, a one-off
   // recipient) -- a one-sided deduction, not a two-sided handover, since there is no second location
@@ -213,14 +232,22 @@ function processStockAdjustment(payload) {
     recipientName=recipient.Name;
   }
   var id=nextId('TXN');
-  var notes=r.kind==='DISTRIBUTION' ? ('Given to: '+recipientName+(r.notes ? ' | '+r.notes : '')) : r.notes;
+  var notes=r.kind==='DISTRIBUTION' ? ('Given to: '+recipientName+(r.notes ? ' | '+r.notes : ''))
+    : r.kind==='VENDOR_RETURN' ? ('Returned against '+r.sourceTxnId+(r.notes ? ' | '+r.notes : ''))
+    : r.notes;
   if(r.kind==='DISTRIBUTION') ensureColumn('LEDGER','RecipientID');
   ensureColumn('LEDGER','ProductName');
-  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.sourceTxnId || '',Actor:payload.actor,Status:'POSTED',Notes:notes,ProductName:p.Name};
+  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.kind==='VENDOR_RETURN' ? vendorReturnPORef : (r.sourceTxnId || ''),Actor:payload.actor,Status:'POSTED',Notes:notes,ProductName:p.Name};
   if(r.kind==='DISTRIBUTION') record.RecipientID=r.recipientId;
+  if(r.kind==='VENDOR_RETURN') {
+    record.InvoiceNo=vendorReturnInvoiceNo;
+    record.Amount=vendorReturnAmount;
+    record.GSTAmount=vendorReturnGst;
+    record.TotalAmount=Math.round((vendorReturnAmount+vendorReturnGst)*100)/100;
+  }
   appendRecord('LEDGER',record);
   audit(payload.actor,'stock.adjust',id,r);
-  return {txnId:id};
+  return {txnId:id, deductedAmount: r.kind==='VENDOR_RETURN' ? vendorReturnAmount+vendorReturnGst : undefined};
 }
 
 /**
