@@ -944,13 +944,27 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
   const product = getProduct(ctx, data.productId);
   if (!product || !isTruthy(product.Active)) throw new Error("UNKNOWN_PRODUCT: Select an active product.");
   const loc = openingLocationForActor(ctx, actor, data.locationId);
-  const qty = positiveQuantity(data.qty, product, false);
-  if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Record the reason.");
   const kind = String(data.kind || "");
   if (!["RETURN", "DAMAGE", "COUNT_IN", "COUNT_OUT", "DISTRIBUTION", "VENDOR_RETURN"].includes(kind)) throw new Error("VALIDATION: Select a correction type.");
+  // VENDOR_RETURN is entered in whole purchase units (bottles/tubes) -- you hand back whole
+  // products, never a partial ml/gm fraction of one -- unlike every other correction here,
+  // which works directly in stock units.
+  let qty: number, qtyBase: number, uom: string;
+  if (kind === "VENDOR_RETURN") {
+    const purchaseQty = Number(data.qty);
+    if (!isFinite(purchaseQty) || purchaseQty <= 0 || Math.floor(purchaseQty) !== purchaseQty) throw new Error("VALIDATION: Enter a whole number of purchase units (e.g. bottles) to return.");
+    qty = purchaseQty;
+    qtyBase = purchaseQty * (Number(product.ConvFactor) || 1);
+    uom = String(product.PurchaseUOM || product.IssueUOM);
+  } else {
+    qty = positiveQuantity(data.qty, product, false);
+    qtyBase = qty;
+    uom = String(product.IssueUOM);
+  }
+  if (!String(data.notes || "").trim()) throw new Error("VALIDATION: Record the reason.");
   if (/^COUNT_/.test(kind) && role !== "Admin") throw new Error("FORBIDDEN: Only management can adjust a physical count.");
   const direction = kind === "RETURN" || kind === "COUNT_IN" ? 1 : -1;
-  if (direction < 0 && qty > availableBalance(ctx, data.productId, loc)) throw new Error("INSUFFICIENT_STOCK: Correction exceeds available stock.");
+  if (direction < 0 && qtyBase > availableBalance(ctx, data.productId, loc)) throw new Error("INSUFFICIENT_STOCK: Correction exceeds available stock.");
   if (kind === "RETURN") {
     const source = findRecord(ctx.ledger, "TxnID", data.sourceTxnId);
     if (!source || source.Type !== "ISSUE" || source.Status === "VOID" || source.ProductID !== data.productId || source.LocationID !== loc) {
@@ -975,9 +989,9 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
     vendorReturnInvoiceNo = String(source.InvoiceNo || "");
     const receivedTotal = ctx.ledger.filter((l) => l.Type === "RECEIPT" && l.Status !== "VOID" && l.ProductID === data.productId && String(l.PORef || "") === vendorReturnPORef).reduce((s, l) => s + Number(l.QtyBase), 0);
     const returnedTotal = ctx.ledger.filter((l) => l.Type === "VENDOR_RETURN" && l.Status !== "VOID" && l.ProductID === data.productId && String(l.PORef || "") === vendorReturnPORef).reduce((s, l) => s + Number(l.QtyBase), 0);
-    if (returnedTotal + qty > receivedTotal) throw new Error("VALIDATION: Return exceeds the quantity received on this order.");
+    if (returnedTotal + qtyBase > receivedTotal) throw new Error("VALIDATION: Return exceeds the quantity received on this order.");
     const sourceQty = Number(source.QtyBase) || 0;
-    const ratio = sourceQty > 0 ? qty / sourceQty : 0;
+    const ratio = sourceQty > 0 ? qtyBase / sourceQty : 0;
     const defaultAmount = Math.round(Number(source.Amount || 0) * ratio * 100) / 100;
     const defaultGst = Math.round(Number(source.GSTAmount || 0) * ratio * 100) / 100;
     vendorReturnAmount = data.amount === "" || data.amount === undefined || data.amount === null ? defaultAmount : Number(data.amount);
@@ -998,7 +1012,7 @@ async function handleStockAdjustment(token: string, actor: string, ctx: Ctx, dat
   const id = nextId("TXN");
   const record: Record<string, unknown> = {
     TxnID: id, Date: dateToSerial(resolveTxnDate(data)), Type: kind, Direction: direction, ProductID: data.productId,
-    Qty: qty, UOM: product.IssueUOM, QtyBase: qty, LocationID: loc,
+    Qty: qty, UOM: uom, QtyBase: qtyBase, LocationID: loc,
     PORef: kind === "VENDOR_RETURN" ? vendorReturnPORef : (data.sourceTxnId || ""),
     Actor: actor, Status: "POSTED",
     Notes: kind === "DISTRIBUTION" ? `Given to: ${recipientName}${data.notes ? ` | ${data.notes}` : ""}`

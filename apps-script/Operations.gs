@@ -191,12 +191,27 @@ function processHandoverCancel(payload) {
 function processStockAdjustment(payload) {
   var role=requireAppRole(payload.actor,['PurchaseCoordinator','ProductDistributor','Admin']),r=payload.data || {},p=getProduct(r.productId);
   if(!p || !isTruthy(p.Active)) throw new Error('UNKNOWN_PRODUCT: Select an active product.');
-  var loc=openingLocationForActor(payload.actor,r.locationId),qty=positiveQuantity(r.qty,p,false);
-  if(!String(r.notes || '').trim()) throw new Error('VALIDATION: Record the reason.');
+  var loc=openingLocationForActor(payload.actor,r.locationId);
   if(['RETURN','DAMAGE','COUNT_IN','COUNT_OUT','DISTRIBUTION','VENDOR_RETURN'].indexOf(r.kind)<0) throw new Error('VALIDATION: Select a correction type.');
+  // VENDOR_RETURN is entered in whole purchase units (bottles/tubes) -- you hand back whole
+  // products, never a partial ml/gm fraction of one -- unlike every other correction here,
+  // which works directly in stock units.
+  var qty, qtyBase, uom;
+  if(r.kind==='VENDOR_RETURN') {
+    var purchaseQty=Number(r.qty);
+    if(!isFinite(purchaseQty) || purchaseQty<=0 || Math.floor(purchaseQty)!==purchaseQty) throw new Error('VALIDATION: Enter a whole number of purchase units (e.g. bottles) to return.');
+    qty=purchaseQty;
+    qtyBase=purchaseQty*(Number(p.ConvFactor) || 1);
+    uom=String(p.PurchaseUOM || p.IssueUOM);
+  } else {
+    qty=positiveQuantity(r.qty,p,false);
+    qtyBase=qty;
+    uom=String(p.IssueUOM);
+  }
+  if(!String(r.notes || '').trim()) throw new Error('VALIDATION: Record the reason.');
   if(/^COUNT_/.test(r.kind) && role!=='Admin') throw new Error('FORBIDDEN: Only management can adjust a physical count.');
   var direction=r.kind==='RETURN' || r.kind==='COUNT_IN' ? 1:-1;
-  if(direction<0 && qty>computeAvailableBalance(r.productId,loc)) throw new Error('INSUFFICIENT_STOCK: Correction exceeds available stock.');
+  if(direction<0 && qtyBase>computeAvailableBalance(r.productId,loc)) throw new Error('INSUFFICIENT_STOCK: Correction exceeds available stock.');
   if(r.kind==='RETURN') {
     var source=findRecord('LEDGER','TxnID',r.sourceTxnId);
     if(!source || source.Type!=='ISSUE' || source.Status==='VOID' || source.ProductID!==r.productId || source.LocationID!==loc) throw new Error('VALIDATION: Select the original issue from this location.');
@@ -214,8 +229,8 @@ function processStockAdjustment(payload) {
     vendorReturnInvoiceNo=String(vrSource.InvoiceNo || '');
     var vrReceived=readAll('LEDGER').filter(function(l){return l.Type==='RECEIPT' && l.Status!=='VOID' && l.ProductID===r.productId && String(l.PORef || '')===vendorReturnPORef;}).reduce(function(s,l){return s+Number(l.QtyBase);},0);
     var vrReturned=readAll('LEDGER').filter(function(l){return l.Type==='VENDOR_RETURN' && l.Status!=='VOID' && l.ProductID===r.productId && String(l.PORef || '')===vendorReturnPORef;}).reduce(function(s,l){return s+Number(l.QtyBase);},0);
-    if(vrReturned+qty>vrReceived) throw new Error('VALIDATION: Return exceeds the quantity received on this order.');
-    var vrSourceQty=Number(vrSource.QtyBase) || 0, vrRatio=vrSourceQty>0 ? qty/vrSourceQty : 0;
+    if(vrReturned+qtyBase>vrReceived) throw new Error('VALIDATION: Return exceeds the quantity received on this order.');
+    var vrSourceQty=Number(vrSource.QtyBase) || 0, vrRatio=vrSourceQty>0 ? qtyBase/vrSourceQty : 0;
     var vrDefaultAmount=Math.round(Number(vrSource.Amount || 0)*vrRatio*100)/100, vrDefaultGst=Math.round(Number(vrSource.GSTAmount || 0)*vrRatio*100)/100;
     vendorReturnAmount=(r.amount==='' || r.amount===undefined || r.amount===null) ? vrDefaultAmount : Number(r.amount);
     vendorReturnGst=(r.gstAmount==='' || r.gstAmount===undefined || r.gstAmount===null) ? vrDefaultGst : Number(r.gstAmount);
@@ -237,7 +252,7 @@ function processStockAdjustment(payload) {
     : r.notes;
   if(r.kind==='DISTRIBUTION') ensureColumn('LEDGER','RecipientID');
   ensureColumn('LEDGER','ProductName');
-  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:p.IssueUOM,QtyBase:qty,LocationID:loc,PORef:r.kind==='VENDOR_RETURN' ? vendorReturnPORef : (r.sourceTxnId || ''),Actor:payload.actor,Status:'POSTED',Notes:notes,ProductName:p.Name};
+  var record={TxnID:id,Date:resolveTxnDate(r),Type:r.kind,Direction:direction,ProductID:r.productId,Qty:qty,UOM:uom,QtyBase:qtyBase,LocationID:loc,PORef:r.kind==='VENDOR_RETURN' ? vendorReturnPORef : (r.sourceTxnId || ''),Actor:payload.actor,Status:'POSTED',Notes:notes,ProductName:p.Name};
   if(r.kind==='DISTRIBUTION') record.RecipientID=r.recipientId;
   if(r.kind==='VENDOR_RETURN') {
     record.InvoiceNo=vendorReturnInvoiceNo;
