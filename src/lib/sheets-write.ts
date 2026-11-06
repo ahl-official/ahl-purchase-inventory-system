@@ -418,20 +418,21 @@ async function handleOrderCreate(token: string, actor: string, ctx: Ctx, data: R
   if (deliveryLocationId !== headOfficeId && !ctx.lists.some((v) => v.Type === "LOCATION" && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra)) {
     throw new Error("VALIDATION: Choose Head Office or an active studio to deliver to.");
   }
+  const isDraft = !!data.draft;
   if (data.requestId) {
     const request = findRecord(ctx.requests, "RequestID", data.requestId);
     if (!request || request.ProductID !== data.productId || !["OPEN", "ORDERED"].includes(String(request.Status))) throw new Error("VALIDATION: Select an approved request for this product.");
-    if (listPurchaseOrders(ctx).some((o) => o.requestId === data.requestId && o.status !== "CANCELLED")) throw new Error("DUPLICATE: This request already has an order.");
+    if (!isDraft && listPurchaseOrders(ctx).some((o) => o.requestId === data.requestId && o.status !== "CANCELLED" && o.status !== "DRAFT")) throw new Error("DUPLICATE: This request already has an order.");
   }
   const id = nextId("PO");
   await appendRow(token, "PURCHASE_ORDERS", {
     OrderID: id, Date: dateToSerial(resolveTxnDate(data)), ProductID: data.productId, VendorID: data.vendorId,
-    QtyOrdered: qty, UOM: p.PurchaseUOM || p.IssueUOM, RequestID: data.requestId || "", Status: "ORDERED",
+    QtyOrdered: qty, UOM: p.PurchaseUOM || p.IssueUOM, RequestID: data.requestId || "", Status: isDraft ? "DRAFT" : "ORDERED",
     Actor: actor, Notes: data.notes || "", DeliveryLocationID: deliveryLocationId, BatchID: id, ProductName: p.Name,
   });
-  if (data.requestId) await updateRow(token, "REQUESTS", "RequestID", String(data.requestId), { Status: "ORDERED" });
-  await auditWrite(token, actor, "order.create", id, data);
-  return { orderId: id, deliveryLocationId };
+  if (data.requestId && !isDraft) await updateRow(token, "REQUESTS", "RequestID", String(data.requestId), { Status: "ORDERED" });
+  await auditWrite(token, actor, isDraft ? "order.saveDraft" : "order.create", id, data);
+  return { orderId: id, deliveryLocationId, draft: isDraft };
 }
 
 /** One vendor, several products. Does not change stock. Ported 1:1 from Operations.gs processOrderCreateLines. */
@@ -455,6 +456,7 @@ async function handleOrderCreateLines(token: string, actor: string, ctx: Ctx, da
     if (price !== "" && (!isFinite(price as number) || (price as number) < 0)) throw new Error("VALIDATION: Enter a valid unit price.");
     return { product: p, productId: line.productId, qty, notes: String(data.notes || "").trim(), unitPrice: price };
   });
+  const isDraft = !!data.draft;
   const date = dateToSerial(resolveTxnDate(data));
   let batchId = "";
   const ids: string[] = [];
@@ -463,14 +465,30 @@ async function handleOrderCreateLines(token: string, actor: string, ctx: Ctx, da
     if (!batchId) batchId = id;
     await appendRow(token, "PURCHASE_ORDERS", {
       OrderID: id, Date: date, ProductID: line.productId, VendorID: data.vendorId, QtyOrdered: line.qty,
-      UOM: line.product!.PurchaseUOM || line.product!.IssueUOM, RequestID: "", Status: "ORDERED", Actor: actor,
+      UOM: line.product!.PurchaseUOM || line.product!.IssueUOM, RequestID: "", Status: isDraft ? "DRAFT" : "ORDERED", Actor: actor,
       Notes: line.notes, DeliveryLocationID: deliveryLocationId, UnitPrice: line.unitPrice, BatchID: batchId,
       ProductName: line.product!.Name,
     });
     ids.push(id);
   }
-  await auditWrite(token, actor, "order.create", ids[0], { count: ids.length, vendorId: data.vendorId });
-  return { orderIds: ids, deliveryLocationId };
+  await auditWrite(token, actor, isDraft ? "order.saveDraft" : "order.create", ids[0], { count: ids.length, vendorId: data.vendorId });
+  return { orderIds: ids, batchId, deliveryLocationId, draft: isDraft };
+}
+
+/** A draft never moved stock or committed to a vendor, so discarding it is a plain status flip to CANCELLED -- same vocabulary the rest of the app already uses for "this order is gone", no new state needed. */
+async function handleOrderDiscardDraft(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const batchId = String(data.batchId || "");
+  if (!batchId) throw new Error("VALIDATION: No draft selected.");
+  const rows = ctx.purchaseOrders.filter((r) => String(r.BatchID || r.OrderID) === batchId);
+  if (!rows.length) throw new Error("NOT_FOUND: Draft not found.");
+  if (rows.some((r) => String(r.Status) !== "DRAFT")) throw new Error("VALIDATION: Only a draft order can be discarded.");
+  for (const row of rows) {
+    await updateRow(token, "PURCHASE_ORDERS", "OrderID", String(row.OrderID), { Status: "CANCELLED" }, (fresh) => {
+      if (String(fresh.Status) !== "DRAFT") throw new Error("STALE_ENTRY: This draft changed. Refresh and try again.");
+    });
+  }
+  await auditWrite(token, actor, "order.discardDraft", batchId, { count: rows.length });
+  return { batchId, count: rows.length };
 }
 
 /** Ported 1:1 from Operations.gs processOrderCancel. */
@@ -1290,7 +1308,7 @@ async function handleStockReceiveOrders(token: string, actor: string, ctx: Ctx, 
 
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.discardDraft", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -1302,6 +1320,7 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "product.delete": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "product.restore": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "order.create": ["PurchaseCoordinator", "Admin"],
+  "order.discardDraft": ["PurchaseCoordinator", "Admin"],
   "order.cancel": ["PurchaseCoordinator", "Admin"],
   "order.edit": ["PurchaseCoordinator", "Admin"],
   "order.delete": ["PurchaseCoordinator", "Admin"],
@@ -1347,6 +1366,7 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "product.delete": result = await handleProductDelete(token, actor, ctx, data); break;
       case "product.restore": result = await handleProductRestore(token, actor, ctx, data); break;
       case "order.create": result = await handleOrderCreate(token, actor, ctx, data); break;
+      case "order.discardDraft": result = await handleOrderDiscardDraft(token, actor, ctx, data); break;
       case "order.cancel": result = await handleOrderCancel(token, actor, ctx, data); break;
       case "order.edit": result = await handleOrderEdit(token, actor, ctx, data); break;
       case "order.delete": result = await handleOrderDelete(token, actor, ctx, data); break;

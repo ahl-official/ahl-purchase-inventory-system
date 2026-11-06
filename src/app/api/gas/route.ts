@@ -40,6 +40,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "operations.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "catalogue.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "order.create": ["PurchaseCoordinator", "Admin"],
+  "order.discardDraft": ["PurchaseCoordinator", "Admin"],
   "order.cancel": ["PurchaseCoordinator", "Admin"],
   "order.edit": ["PurchaseCoordinator", "Admin"],
   "order.delete": ["PurchaseCoordinator", "Admin"],

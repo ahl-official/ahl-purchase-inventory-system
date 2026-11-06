@@ -423,6 +423,39 @@ await (async () => {
   assert.equal(tabs.PURCHASE_ORDERS.rows[1][headers.indexOf('UnitPrice')], 12.5);
 })();
 
+// ---- order.create (draft) / order.discardDraft ----
+await (async () => {
+  // Saving as a draft writes DRAFT, not ORDERED, and never touches a linked request's status.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('order.create', 'purchase@ahl.com', {
+    vendorId: 'VND-1', draft: true, lines: [{ productId: 'PRD-0001', qty: 5 }, { productId: 'PRD-0002', qty: 3 }], operationId: opId(),
+  });
+  assert.equal(result.draft, true);
+  const h = tabs.PURCHASE_ORDERS.headers;
+  const rows = tabs.PURCHASE_ORDERS.rows.filter((r) => r[h.indexOf('BatchID')] === result.batchId);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((r) => r[h.indexOf('Status')] === 'DRAFT'));
+})();
+await (async () => {
+  // Discarding a draft flips every line in its batch to CANCELLED.
+  const { writeDirect, tabs } = fixture();
+  const result = await writeDirect('order.create', 'purchase@ahl.com', { vendorId: 'VND-1', draft: true, qty: 5, productId: 'PRD-0001', operationId: opId() });
+  const discarded = await writeDirect('order.discardDraft', 'purchase@ahl.com', { batchId: result.orderId, operationId: opId() });
+  assert.equal(discarded.count, 1);
+  const h = tabs.PURCHASE_ORDERS.headers;
+  assert.equal(tabs.PURCHASE_ORDERS.rows.find((r) => r[h.indexOf('OrderID')] === result.orderId)[h.indexOf('Status')], 'CANCELLED');
+})();
+await (async () => {
+  // A real (non-draft) order cannot be discarded as if it were one.
+  const { writeDirect } = fixture();
+  const result = await writeDirect('order.create', 'purchase@ahl.com', { productId: 'PRD-0001', vendorId: 'VND-1', qty: 10, operationId: opId() });
+  await assert.rejects(() => writeDirect('order.discardDraft', 'purchase@ahl.com', { batchId: result.orderId, operationId: opId() }), /VALIDATION/);
+})();
+await (async () => {
+  const { writeDirect } = fixture();
+  await assert.rejects(() => writeDirect('order.discardDraft', 'purchase@ahl.com', { batchId: 'PO-NOPE', operationId: opId() }), /NOT_FOUND/);
+})();
+
 // ---- order.cancel ----
 await (async () => {
   const { writeDirect, tabs } = fixture();

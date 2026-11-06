@@ -35,7 +35,7 @@ function listPurchaseOrders() {
   return readAll('PURCHASE_ORDERS').map(function (r) {
     var received = ledger.reduce(function (sum,l) { return l.Type === 'RECEIPT' && l.Status !== 'VOID' && l.PORef === r.OrderID ? sum + Number(l.Qty) : sum; },0);
     var p = getProduct(r.ProductID);
-    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId, unitPrice: r.UnitPrice === '' || r.UnitPrice == null ? null : Number(r.UnitPrice), batchId: r.BatchID || r.OrderID };
+    return { orderId:r.OrderID, date:r.Date, productId:r.ProductID, productName:p ? p.Name:r.ProductID, vendorId:r.VendorID, qty:Number(r.QtyOrdered), uom:r.UOM, received:received, remaining:Math.max(0,Number(r.QtyOrdered)-received), requestId:r.RequestID || '', status:r.Status === 'DRAFT' ? 'DRAFT' : r.Status === 'CANCELLED' ? 'CANCELLED' : received >= Number(r.QtyOrdered) ? 'RECEIVED' : received > 0 ? 'PARTIAL' : 'ORDERED', notes:r.Notes || '', deliveryLocationId: r.DeliveryLocationID || headOfficeId, unitPrice: r.UnitPrice === '' || r.UnitPrice == null ? null : Number(r.UnitPrice), batchId: r.BatchID || r.OrderID };
   }).reverse();
 }
 
@@ -54,19 +54,20 @@ function processOrderCreate(payload) {
   if (deliveryLocationId !== headOfficeId && !readAll('LISTS').some(function (v) { return v.Type === 'LOCATION' && v.Code === deliveryLocationId && isTruthy(v.Active) && v.Extra; })) {
     throw new Error('VALIDATION: Choose Head Office or an active studio to deliver to.');
   }
+  var isDraft = !!r.draft;
   if (r.requestId) {
     var request = findRecord('REQUESTS','RequestID',r.requestId);
     if (!request || request.ProductID !== r.productId || ['OPEN','ORDERED'].indexOf(request.Status) < 0) throw new Error('VALIDATION: Select an approved request for this product.');
-    if (listPurchaseOrders().some(function (o) { return o.requestId === r.requestId && o.status !== 'CANCELLED'; })) throw new Error('DUPLICATE: This request already has an order.');
+    if (!isDraft && listPurchaseOrders().some(function (o) { return o.requestId === r.requestId && o.status !== 'CANCELLED' && o.status !== 'DRAFT'; })) throw new Error('DUPLICATE: This request already has an order.');
   }
   var id=nextId('PO');
   ensureColumn('PURCHASE_ORDERS','DeliveryLocationID');
   ensureColumn('PURCHASE_ORDERS','BatchID');
   ensureColumn('PURCHASE_ORDERS','ProductName');
-  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId,BatchID:id,ProductName:p.Name});
-  if(r.requestId) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
-  audit(payload.actor,'order.create',id,r);
-  return {orderId:id, deliveryLocationId:deliveryLocationId};
+  appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:r.productId,VendorID:r.vendorId,QtyOrdered:qty,UOM:p.PurchaseUOM || p.IssueUOM,RequestID:r.requestId || '',Status:isDraft ? 'DRAFT' : 'ORDERED',Actor:payload.actor,Notes:r.notes || '',DeliveryLocationID:deliveryLocationId,BatchID:id,ProductName:p.Name});
+  if(r.requestId && !isDraft) updateRecordFields('REQUESTS','RequestID',r.requestId,{Status:'ORDERED'});
+  audit(payload.actor,isDraft ? 'order.saveDraft' : 'order.create',id,r);
+  return {orderId:id, deliveryLocationId:deliveryLocationId, draft:isDraft};
 }
 
 /** One vendor, several products. Does not change stock. */
@@ -97,15 +98,30 @@ function processOrderCreateLines(payload) {
   });
   // Every line created by this one call shares the first line's OrderID as its BatchID, so the
   // whole multi-product order can be displayed and tracked together, like one invoice.
+  var isDraft = !!r.draft;
   var batchId = '';
   var ids = prepared.map(function (line) {
     var id = nextId('PO');
     if (!batchId) batchId = id;
-    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice,BatchID:batchId,ProductName:line.product.Name});
+    appendRecord('PURCHASE_ORDERS',{OrderID:id,Date:resolveTxnDate(r),ProductID:line.productId,VendorID:r.vendorId,QtyOrdered:line.qty,UOM:line.product.PurchaseUOM || line.product.IssueUOM,RequestID:'',Status:isDraft ? 'DRAFT' : 'ORDERED',Actor:payload.actor,Notes:line.notes,DeliveryLocationID:deliveryLocationId,UnitPrice:line.unitPrice,BatchID:batchId,ProductName:line.product.Name});
     return id;
   });
-  audit(payload.actor,'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});
-  return {orderIds:ids, deliveryLocationId:deliveryLocationId};
+  audit(payload.actor,isDraft ? 'order.saveDraft' : 'order.create',ids[0],{count:ids.length,vendorId:r.vendorId});
+  return {orderIds:ids, batchId:batchId, deliveryLocationId:deliveryLocationId, draft:isDraft};
+}
+
+/** A draft never moved stock or committed to a vendor, so discarding it is a plain status flip to CANCELLED. */
+function processOrderDiscardDraft(payload) {
+  requireAppRole(payload.actor,['PurchaseCoordinator','Admin']);
+  var r = payload.data || {};
+  var batchId = String(r.batchId || '');
+  if (!batchId) throw new Error('VALIDATION: No draft selected.');
+  var rows = readAll('PURCHASE_ORDERS').filter(function (row) { return String(row.BatchID || row.OrderID) === batchId; });
+  if (!rows.length) throw new Error('NOT_FOUND: Draft not found.');
+  if (rows.some(function (row) { return row.Status !== 'DRAFT'; })) throw new Error('VALIDATION: Only a draft order can be discarded.');
+  rows.forEach(function (row) { updateRecordFields('PURCHASE_ORDERS','OrderID',row.OrderID,{Status:'CANCELLED'}); });
+  audit(payload.actor,'order.discardDraft',batchId,{count:rows.length});
+  return {batchId:batchId, count:rows.length};
 }
 
 function processListAdd(payload) {

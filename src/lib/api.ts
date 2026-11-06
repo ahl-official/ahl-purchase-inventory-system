@@ -21,6 +21,7 @@ export type AppsScriptAction =
   | "operations.read"
   | "catalogue.read"
   | "order.create"
+  | "order.discardDraft"
   | "order.cancel"
   | "order.edit"
   | "order.delete"

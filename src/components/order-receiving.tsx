@@ -40,7 +40,7 @@ export function OrderReceiving({orders,catalogue:c,busy,onSubmit}:{
   onSubmit:(action:AppsScriptAction,values:object)=>Promise<boolean>;
 }) {
   const [vendor,setVendor]=useState(''),[day,setDay]=useState('');
-  const open=orders.filter(o=>o.remaining>0&&o.status!=='CANCELLED');
+  const open=orders.filter(o=>o.remaining>0&&o.status!=='CANCELLED'&&o.status!=='DRAFT');
   const dates=[...new Set(open.filter(o=>o.vendorId===vendor).map(o=>orderDay(o.date)).filter(Boolean))].sort().reverse();
   const matching=open.filter(o=>o.vendorId===vendor&&orderDay(o.date)===day);
   return <Panel><div className="space-y-4 p-5">

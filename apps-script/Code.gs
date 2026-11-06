@@ -79,7 +79,7 @@ function doPost(e) {
         'dashboard.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'operations.read':['PurchaseCoordinator','ProductDistributor','Admin'],
         'catalogue.read':['PurchaseCoordinator','ProductDistributor','Admin'],
-        'order.create':['PurchaseCoordinator','Admin'], 'order.cancel':['PurchaseCoordinator','Admin'],
+        'order.create':['PurchaseCoordinator','Admin'], 'order.discardDraft':['PurchaseCoordinator','Admin'], 'order.cancel':['PurchaseCoordinator','Admin'],
         'order.edit':['PurchaseCoordinator','Admin'], 'order.delete':['PurchaseCoordinator','Admin'],
         'receipt.edit':['PurchaseCoordinator','Admin'], 'receipt.delete':['PurchaseCoordinator','Admin'],
         'handover.cancel':['PurchaseCoordinator','Admin'],
@@ -122,6 +122,7 @@ function doPost(e) {
         case 'operations.read': result=getOperations(payload); break;
         case 'catalogue.read': result=getCatalogue(payload.data); break;
         case 'order.create': result=processOrderCreate(payload); break;
+        case 'order.discardDraft': result=processOrderDiscardDraft(payload); break;
         case 'order.cancel': result=processOrderCancel(payload); break;
         case 'order.edit': result=processOrderEdit(payload); break;
         case 'order.delete': result=processOrderDelete(payload); break;
