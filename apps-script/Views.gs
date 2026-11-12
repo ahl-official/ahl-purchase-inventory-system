@@ -72,40 +72,61 @@ function inventoryViewDefinitions(headers) {
   // Accounts verify payments off this tab, so it carries only orders with something actually
   // received -- never a pure CANCELLED order, and never one that's still just ORDERED with
   // nothing delivered yet (that lives in PENDING_ORDERS instead).
+  // Every column below A is its OWN formula per row (not one array spilling down a column) --
+  // so typing a correction into any single cell only ever touches that cell. An array-spill
+  // column dies entirely (every row in it blanks out) the moment one cell in its range gets a
+  // stray value, which is exactly the "editing a row wipes everything" bug this avoids.
   defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Unit Price (Rs)','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Returned (Rs)','Payable (Rs)','Bill','Note'],formulas:[
-    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>"",'+receivedQtyByOrderRow+'>0,'+po('Status')+'<>"CANCELLED"),FILTER('+po('Date')+','+po('OrderID')+'<>"",'+receivedQtyByOrderRow+'>0,'+po('Status')+'<>"CANCELLED"),TRUE),"")',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(MIN(FILTER('+l('Date')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID")),""))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),"Not entered")))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('VendorID')+'),'+ref('LISTS','Code')+','+ref('LISTS','Name')+'),""))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('ProductID')+'),'+ref('PRODUCTS','ProductID')+','+ref('PRODUCTS','Name')+'),'+orderField('ProductName')+'))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+po('OrderID')+','+po('QtyOrdered')+'),0))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedQty+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF(OR('+orderField('Status')+'="CANCELLED",'+orderField('Status')+'="DRAFT"),0,IF('+orderField('QtyOrdered')+'>'+receivedQty+','+orderField('QtyOrdered')+'-'+receivedQty+',0)))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('UOM')+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",ROUND('+receivedAmt+'/'+receivedQty+',2)))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+orderField('Status')+'="CANCELLED","CANCELLED",IF('+orderField('Status')+'="DRAFT","DRAFT",IF('+receivedQty+'>='+orderField('QtyOrdered')+',"RECEIVED",IF('+receivedQty+'>0,"PARTIAL","ORDERED")))))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedAmt+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedAmt+'<=0,"",ROUND('+receivedGst+'/'+receivedAmt+'*100,2)))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedGst+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedAmt+'+'+receivedGst+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+returnedAmt+'+'+returnedGst+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",('+receivedAmt+'+'+receivedGst+')-('+returnedAmt+'+'+returnedGst+'))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",LET(link,IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('BillPhotoURL')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('BillPhotoURL')+'<>""))),""),IF(link="","No bill attached",link))))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(" | ",TRUE,UNIQUE(FILTER('+l('Notes')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('Notes')+'<>""))),""))))'
-  ],dateColumns:[1,2]};
+    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>"",'+receivedQtyByOrderRow+'>0,'+po('Status')+'<>"CANCELLED"),FILTER('+po('Date')+','+po('OrderID')+'<>"",'+receivedQtyByOrderRow+'>0,'+po('Status')+'<>"CANCELLED"),TRUE),"")'
+  ],rowFormula:function(r){
+    var id='A'+r,M='M'+r,N='N'+r,O='O'+r,P='P'+r,Q='Q'+r;
+    function orderFieldR(col){return 'IFNA(XLOOKUP('+id+','+po('OrderID')+','+po(col)+'),"")';}
+    var receivedQtyR='SUMIFS('+l('Qty')+','+l('PORef')+','+id+','+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+    var receivedAmtR='SUMIFS('+l('Amount')+','+l('PORef')+','+id+','+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+    var receivedGstR='SUMIFS('+l('GSTAmount')+','+l('PORef')+','+id+','+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID")';
+    var returnedAmtR='SUMIFS('+l('Amount')+','+l('PORef')+','+id+','+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
+    var returnedGstR='SUMIFS('+l('GSTAmount')+','+l('PORef')+','+id+','+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
+    return [
+      '=IF('+id+'="","",'+orderFieldR('Date')+')',
+      '=IF('+id+'="","",IFERROR(MIN(FILTER('+l('Date')+','+l('PORef')+'='+id+','+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID")),""))',
+      '=IF('+id+'="","",IF('+receivedQtyR+'<=0,"",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'='+id+','+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),"Not entered")))',
+      '=IF('+id+'="","",IFNA(XLOOKUP(XLOOKUP('+id+','+po('OrderID')+','+po('VendorID')+'),'+ref('LISTS','Code')+','+ref('LISTS','Name')+'),""))',
+      '=IF('+id+'="","",IFNA(XLOOKUP(XLOOKUP('+id+','+po('OrderID')+','+po('ProductID')+'),'+ref('PRODUCTS','ProductID')+','+ref('PRODUCTS','Name')+'),'+orderFieldR('ProductName')+'))',
+      '=IF('+id+'="","",IFNA(XLOOKUP('+id+','+po('OrderID')+','+po('QtyOrdered')+'),0))',
+      '=IF('+id+'="","",'+receivedQtyR+')',
+      '=IF('+id+'="","",IF(OR('+orderFieldR('Status')+'="CANCELLED",'+orderFieldR('Status')+'="DRAFT"),0,IF('+orderFieldR('QtyOrdered')+'>'+receivedQtyR+','+orderFieldR('QtyOrdered')+'-'+receivedQtyR+',0)))',
+      '=IF('+id+'="","",'+orderFieldR('UOM')+')',
+      '=IF('+id+'="","",IF('+receivedQtyR+'<=0,"",ROUND('+receivedAmtR+'/'+receivedQtyR+',2)))',
+      '=IF('+id+'="","",IF('+orderFieldR('Status')+'="CANCELLED","CANCELLED",IF('+orderFieldR('Status')+'="DRAFT","DRAFT",IF('+receivedQtyR+'>='+orderFieldR('QtyOrdered')+',"RECEIVED",IF('+receivedQtyR+'>0,"PARTIAL","ORDERED")))))',
+      '=IF('+id+'="","",'+receivedAmtR+')',
+      '=IF('+id+'="","",IF('+receivedAmtR+'<=0,"",ROUND('+receivedGstR+'/'+receivedAmtR+'*100,2)))',
+      // GST (Rs) and everything after it derive from THIS row's own Amount (M) and GST % (N)
+      // cells, not a fresh ledger sum -- so editing GST % (or Amount) here recalculates them.
+      '=IF('+id+'="","",IF(OR('+M+'="",'+N+'=""),"",ROUND('+M+'*'+N+'/100,2)))',
+      '=IF('+id+'="","",IF('+M+'="","",'+M+'+IF('+O+'="",0,'+O+')))',
+      '=IF('+id+'="","",'+returnedAmtR+'+'+returnedGstR+')',
+      '=IF('+id+'="","",IF('+P+'="","",'+P+'-'+Q+'))',
+      '=IF('+id+'="","",IF('+receivedQtyR+'<=0,"",LET(link,IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('BillPhotoURL')+','+l('PORef')+'='+id+','+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('BillPhotoURL')+'<>""))),""),IF(link="","No bill attached",link))))',
+      '=IF('+id+'="","",IFERROR(TEXTJOIN(" | ",TRUE,UNIQUE(FILTER('+l('Notes')+','+l('PORef')+'='+id+','+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('Notes')+'<>""))),""))'
+    ];
+  },maxRows:1000,dateColumns:[1,2]};
   // Orders placed but with nothing received yet -- purchasing's follow-up list, kept separate
   // from PURCHASE_TRACKER so accounts only ever sees money actually owed against real deliveries.
   // Once anything is received the order moves itself into PURCHASE_TRACKER and drops out of here.
   defs.PENDING_ORDERS={headers:['Order','Order date','Vendor','Product','Ordered','Unit','Note'],formulas:[
-    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>"",'+po('Status')+'="ORDERED",'+receivedQtyByOrderRow+'=0),FILTER('+po('Date')+','+po('OrderID')+'<>"",'+po('Status')+'="ORDERED",'+receivedQtyByOrderRow+'=0),TRUE),"")',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('VendorID')+'),'+ref('LISTS','Code')+','+ref('LISTS','Name')+'),""))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('ProductID')+'),'+ref('PRODUCTS','ProductID')+','+ref('PRODUCTS','Name')+'),""))))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('QtyOrdered')+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('UOM')+')))',
-    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Notes')+')))'
-  ],dateColumns:[1]};
+    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>"",'+po('Status')+'="ORDERED",'+receivedQtyByOrderRow+'=0),FILTER('+po('Date')+','+po('OrderID')+'<>"",'+po('Status')+'="ORDERED",'+receivedQtyByOrderRow+'=0),TRUE),"")'
+  ],rowFormula:function(r){
+    var id='A'+r;
+    function orderFieldR(col){return 'IFNA(XLOOKUP('+id+','+po('OrderID')+','+po(col)+'),"")';}
+    return [
+      '=IF('+id+'="","",'+orderFieldR('Date')+')',
+      '=IF('+id+'="","",IFNA(XLOOKUP(XLOOKUP('+id+','+po('OrderID')+','+po('VendorID')+'),'+ref('LISTS','Code')+','+ref('LISTS','Name')+'),""))',
+      '=IF('+id+'="","",IFNA(XLOOKUP(XLOOKUP('+id+','+po('OrderID')+','+po('ProductID')+'),'+ref('PRODUCTS','ProductID')+','+ref('PRODUCTS','Name')+'),""))',
+      '=IF('+id+'="","",'+orderFieldR('QtyOrdered')+')',
+      '=IF('+id+'="","",'+orderFieldR('UOM')+')',
+      '=IF('+id+'="","",'+orderFieldR('Notes')+')'
+    ];
+  },maxRows:300,dateColumns:[1]};
   return defs;
 }
 
@@ -119,6 +140,11 @@ function upgradeInventoryDatabase() {
     var v=views[name];ensureTab(ss,name,v.headers);var sheet=ss.getSheetByName(name);
     sheet.getDataRange().clearContent();sheet.getRange(1,1,1,v.headers.length).setValues([v.headers]);
     sheet.getRange(2,1,1,v.formulas.length).setFormulas([v.formulas]);
+    if(v.rowFormula){
+      var rows=[];
+      for(var r=2;r<v.maxRows+2;r++)rows.push(v.rowFormula(r));
+      sheet.getRange(2,2,v.maxRows,v.headers.length-1).setFormulas(rows);
+    }
     sheet.setFrozenRows(1);sheet.setColumnWidths(1,v.headers.length,145);sheet.setColumnWidth(name.indexOf('OPENING_')===0?1:2,250);
     v.dateColumns.forEach(function(i){sheet.getRange(2,i+1,sheet.getMaxRows()-1,1).setNumberFormat('dd mmm yyyy hh:mm');});
   });
