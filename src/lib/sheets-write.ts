@@ -929,7 +929,7 @@ async function handleRetailSale(token: string, actor: string, ctx: Ctx, data: Re
   if (data.notes) notesParts.push(String(data.notes).trim());
   const saleAmount = qtyBase * (Number(product.Cost) || 0);
   await appendRow(token, "LEDGER", {
-    TxnID: txnId, Date: dateToSerial(new Date()), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
+    TxnID: txnId, Date: dateToSerial(resolveTxnDate(data)), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
     UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase, LocationID: locationId, PersonID: techId,
     Amount: saleAmount, Actor: actor, Status: "SOLD", Notes: notesParts.join(" | "),
     ProductName: product.Name, TotalAmount: saleAmount,

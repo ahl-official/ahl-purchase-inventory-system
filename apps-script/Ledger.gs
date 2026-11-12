@@ -148,7 +148,7 @@ function processRetailSale(payload) {
   ensureColumn("LEDGER", "ProductName");
   var saleAmount = qtyBase * (Number(product.Cost) || 0);
   appendRecord("LEDGER", {
-    TxnID: txnId, Date: new Date(), Type: "RETAIL_SALE", Direction: -1,
+    TxnID: txnId, Date: resolveTxnDate(req), Type: "RETAIL_SALE", Direction: -1,
     ProductID: req.productId, Qty: qty, UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase,
     LocationID: locationId, PersonID: techId, Amount: saleAmount,
     Actor: payload.actor, Status: "SOLD", Notes: notesParts.join(" | "), ProductName: product.Name,
