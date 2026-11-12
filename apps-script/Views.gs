@@ -65,9 +65,15 @@ function inventoryViewDefinitions(headers) {
   // touching Received/Outstanding above -- a return doesn't mean the vendor owes more units.
   var returnedAmt='SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
   var returnedGst='SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
+  // Per-row received qty, usable inside a FILTER condition on PURCHASE_ORDERS itself (where no
+  // single "id" is bound yet) -- BYROW walks every order row and sums its own receipts.
+  var receivedQtyByOrderRow='BYROW('+po('OrderID')+',LAMBDA(oid,IF(oid="",0,SUMIFS('+l('Qty')+','+l('PORef')+',oid,'+l('Type')+',"RECEIPT",'+l('Status')+',"<>VOID"))))';
   function orderField(col){return 'IFNA(XLOOKUP(id,'+po('OrderID')+','+po(col)+'),"")';}
+  // Accounts verify payments off this tab, so it carries only orders with something actually
+  // received -- never a pure CANCELLED order, and never one that's still just ORDERED with
+  // nothing delivered yet (that lives in PENDING_ORDERS instead).
   defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Unit Price (Rs)','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Returned (Rs)','Payable (Rs)','Bill','Note'],formulas:[
-    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),TRUE),"")',
+    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>"",'+receivedQtyByOrderRow+'>0,'+po('Status')+'<>"CANCELLED"),FILTER('+po('Date')+','+po('OrderID')+'<>"",'+receivedQtyByOrderRow+'>0,'+po('Status')+'<>"CANCELLED"),TRUE),"")',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(MIN(FILTER('+l('Date')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID")),""))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('InvoiceNo')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('InvoiceNo')+'<>""))),"Not entered")))))',
@@ -88,6 +94,18 @@ function inventoryViewDefinitions(headers) {
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",LET(link,IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER('+l('BillPhotoURL')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('BillPhotoURL')+'<>""))),""),IF(link="","No bill attached",link))))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(TEXTJOIN(" | ",TRUE,UNIQUE(FILTER('+l('Notes')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID",'+l('Notes')+'<>""))),""))))'
   ],dateColumns:[1,2]};
+  // Orders placed but with nothing received yet -- purchasing's follow-up list, kept separate
+  // from PURCHASE_TRACKER so accounts only ever sees money actually owed against real deliveries.
+  // Once anything is received the order moves itself into PURCHASE_TRACKER and drops out of here.
+  defs.PENDING_ORDERS={headers:['Order','Order date','Vendor','Product','Ordered','Unit','Note'],formulas:[
+    '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>"",'+po('Status')+'="ORDERED",'+receivedQtyByOrderRow+'=0),FILTER('+po('Date')+','+po('OrderID')+'<>"",'+po('Status')+'="ORDERED",'+receivedQtyByOrderRow+'=0),TRUE),"")',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('VendorID')+'),'+ref('LISTS','Code')+','+ref('LISTS','Name')+'),""))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IFNA(XLOOKUP(XLOOKUP(id,'+po('OrderID')+','+po('ProductID')+'),'+ref('PRODUCTS','ProductID')+','+ref('PRODUCTS','Name')+'),""))))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('QtyOrdered')+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('UOM')+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Notes')+')))'
+  ],dateColumns:[1]};
   return defs;
 }
 
