@@ -66,7 +66,7 @@ function inventoryViewDefinitions(headers) {
   var returnedAmt='SUMIFS('+l('Amount')+','+l('PORef')+',id,'+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
   var returnedGst='SUMIFS('+l('GSTAmount')+','+l('PORef')+',id,'+l('Type')+',"VENDOR_RETURN",'+l('Status')+',"<>VOID")';
   function orderField(col){return 'IFNA(XLOOKUP(id,'+po('OrderID')+','+po(col)+'),"")';}
-  defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Returned (Rs)','Payable (Rs)','Bill','Note'],formulas:[
+  defs.PURCHASE_TRACKER={headers:['Order','Order date','Invoice date','Invoice number','Vendor','Product','Ordered','Received','Outstanding','Unit','Unit Price (Rs)','Status','Amount (Rs)','GST %','GST (Rs)','Total (Rs)','Returned (Rs)','Payable (Rs)','Bill','Note'],formulas:[
     '=IFERROR(SORT(FILTER('+po('OrderID')+','+po('OrderID')+'<>""),FILTER('+po('Date')+','+po('OrderID')+'<>""),TRUE),"")',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('Date')+')))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IFERROR(MIN(FILTER('+l('Date')+','+l('PORef')+'=id,'+l('Type')+'="RECEIPT",'+l('Status')+'<>"VOID")),""))))',
@@ -77,6 +77,7 @@ function inventoryViewDefinitions(headers) {
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedQty+')))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF(OR('+orderField('Status')+'="CANCELLED",'+orderField('Status')+'="DRAFT"),0,IF('+orderField('QtyOrdered')+'>'+receivedQty+','+orderField('QtyOrdered')+'-'+receivedQty+',0)))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+orderField('UOM')+')))',
+    '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedQty+'<=0,"",ROUND('+receivedAmt+'/'+receivedQty+',2)))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+orderField('Status')+'="CANCELLED","CANCELLED",IF('+orderField('Status')+'="DRAFT","DRAFT",IF('+receivedQty+'>='+orderField('QtyOrdered')+',"RECEIVED",IF('+receivedQty+'>0,"PARTIAL","ORDERED")))))))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",'+receivedAmt+')))',
     '=MAP(A2:A,LAMBDA(id,IF(id="","",IF('+receivedAmt+'<=0,"",ROUND('+receivedGst+'/'+receivedAmt+'*100,2)))))',
