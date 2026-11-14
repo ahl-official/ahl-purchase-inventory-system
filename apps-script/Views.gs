@@ -130,6 +130,15 @@ function inventoryViewDefinitions(headers) {
   return defs;
 }
 
+/** PRODUCTS' "Unit Price (Rs)" column, one formula per row -- the price from that product's
+ * most recently dated PURCHASE_TRACKER row (matched by name, since that's what the tracker
+ * carries). Cost stays the separate, auto-updating-per-receipt field everything else uses;
+ * this is a read-only reference pulled live off the tracker, nothing more. */
+function productUnitPriceFormula(row) {
+  var name = 'B' + row;
+  return '=IFERROR(INDEX(FILTER(PURCHASE_TRACKER!K2:K,PURCHASE_TRACKER!F2:F=' + name + ',PURCHASE_TRACKER!B2:B=MAXIFS(PURCHASE_TRACKER!B2:B,PURCHASE_TRACKER!F2:F,' + name + ')),1),"")';
+}
+
 /** Additive migration: never import the old seed workbook over live master data. */
 function upgradeInventoryDatabase() {
   var ss=db();

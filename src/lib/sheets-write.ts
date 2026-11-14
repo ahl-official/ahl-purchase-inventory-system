@@ -112,6 +112,21 @@ async function appendRow(token: string, sheetName: string, record: Record<string
   if (SORT_BY_DATE_TABS.has(sheetName)) await sortTabByDate(token, sheetName, headers);
 }
 
+/** PRODUCTS' "Unit Price (Rs)" column, mirrored from Views.gs's productUnitPriceFormula --
+ * the price from that product's most recently dated PURCHASE_TRACKER row, matched by name. */
+function productUnitPriceFormula(row: number): string {
+  const name = `B${row}`;
+  return `=IFERROR(INDEX(FILTER(PURCHASE_TRACKER!K2:K,PURCHASE_TRACKER!F2:F=${name},PURCHASE_TRACKER!B2:B=MAXIFS(PURCHASE_TRACKER!B2:B,PURCHASE_TRACKER!F2:F,${name})),1),"")`;
+}
+
+/** A plain cell write (not through appendRow/updateRow) that's a live formula, not data --
+ * needs USER_ENTERED, unlike every other write in this file which stores literal values. */
+async function setCellFormula(token: string, sheetName: string, a1: string, formula: string): Promise<void> {
+  await sheetsFetch(token, `/values/${encodeURIComponent(sheetName)}!${a1}?valueInputOption=USER_ENTERED`, {
+    method: "PUT", body: JSON.stringify({ values: [[formula]] }),
+  });
+}
+
 // Dated record tabs stay oldest-first, so a backfilled entry lands on its real date
 // instead of at the bottom. Matches Db.gs sortTabByDate.
 const SORT_BY_DATE_TABS = new Set(["LEDGER", "PURCHASE_ORDERS", "REQUESTS", "OPENING_COUNTS", "OPERATIONS", "AUDIT"]);
@@ -297,7 +312,7 @@ async function handleProductCreate(token: string, actor: string, ctx: Ctx, data:
   if (data.vendorId && !has("VENDOR", data.vendorId)) throw new Error("VALIDATION: Choose a listed supplier.");
   if (ctx.products.some((p) => normName(String(p.Name)) === normName(name))) throw new Error("DUPLICATE: This product already exists.");
 
-  const { rows: liveProducts } = await readTabRaw(token, "PRODUCTS");
+  const { headers: productHeaders, rows: liveProducts } = await readTabRaw(token, "PRODUCTS");
   if (liveProducts.some((r) => normName(String(r.data.Name)) === normName(name))) throw new Error("DUPLICATE: This product already exists.");
   const max = liveProducts.reduce((m, r) => { const n = /^PRD-(\d+)$/.exec(String(r.data.ProductID)); return n ? Math.max(m, Number(n[1])) : m; }, 0);
   const id = `PRD-${String(max + 1).padStart(4, "0")}`;
@@ -307,6 +322,13 @@ async function handleProductCreate(token: string, actor: string, ctx: Ctx, data:
     Notes: [String(data.brand || "").trim() ? `Brand: ${String(data.brand).trim()}` : "", String(data.notes || "").trim().slice(0, 300)].filter(Boolean).join(" | "),
     ProductType: productType,
   });
+  // Unit Price (Rs) is a formula column, not written by appendRow -- set it on just this new
+  // row so the product doesn't sit with a blank price until the next full view refresh.
+  const priceCol = productHeaders.indexOf("Unit Price (Rs)");
+  if (priceCol >= 0) {
+    const newRow = liveProducts.length + 2;
+    await setCellFormula(token, "PRODUCTS", `${colLetter(priceCol + 1)}${newRow}`, productUnitPriceFormula(newRow));
+  }
   await auditWrite(token, actor, "product.create", id, data);
   return { productId: id, name };
 }

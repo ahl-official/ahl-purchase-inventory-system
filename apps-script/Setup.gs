@@ -30,7 +30,7 @@ var SCHEMA = {
   PRODUCTS: [
     "ProductID", "Name", "CategoryID", "IssueUOM", "PurchaseUOM", "ConvFactor",
     "Cost", "GSTPercent", "VendorID", "ReorderLevel", "Active", "Notes",
-    "ProductType"
+    "ProductType", "Unit Price (Rs)"
   ],
   PEOPLE: [
     "UserID", "Email", "Name", "Role", "LocationID", "ApprovalLimit", "Active",

@@ -306,6 +306,11 @@ function processProductCreate(payload) {
   var max=rows.reduce(function(m,p){var n=/^PRD-(\d+)$/.exec(String(p.ProductID));return n?Math.max(m,Number(n[1])):m;},0);
   var id='PRD-'+('0000'+(max+1)).slice(-4);
   appendRecord('PRODUCTS',{ProductID:id,Name:name,CategoryID:r.categoryId,IssueUOM:issueUom,PurchaseUOM:purchaseUom,ConvFactor:conv,Cost:cost,GSTPercent:gst/100,VendorID:r.vendorId || '',ReorderLevel:reorder,Active:true,Notes:[String(r.brand || '').trim() ? 'Brand: '+String(r.brand).trim() : '',String(r.notes || '').trim().slice(0,300)].filter(String).join(' | '),ProductType:r.productType});
+  // Unit Price (Rs) is a formula column, not written by appendRecord -- set it on just this
+  // new row so the product doesn't sit with a blank price until the next full view refresh.
+  var sheet=db().getSheetByName('PRODUCTS'), newRow=rows.length+2;
+  var priceCol=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0].indexOf('Unit Price (Rs)')+1;
+  if(priceCol>0) sheet.getRange(newRow,priceCol).setFormula(productUnitPriceFormula(newRow));
   audit(payload.actor,'product.create',id,r);
   return {productId:id,name:name};
 }
