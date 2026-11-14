@@ -29,8 +29,8 @@ var SCHEMA = {
   OPERATIONS: ['OperationID','Date','Actor','Action','Status','Result'],
   PRODUCTS: [
     "ProductID", "Name", "CategoryID", "IssueUOM", "PurchaseUOM", "ConvFactor",
-    "Cost", "GSTPercent", "VendorID", "ReorderLevel", "Active", "Notes",
-    "ProductType", "Unit Price (Rs)"
+    "Unit Price (Rs)", "Cost", "GSTPercent", "VendorID", "ReorderLevel", "Active", "Notes",
+    "ProductType"
   ],
   PEOPLE: [
     "UserID", "Email", "Name", "Role", "LocationID", "ApprovalLimit", "Active",
