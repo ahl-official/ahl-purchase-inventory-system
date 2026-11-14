@@ -14,13 +14,18 @@ function inventoryViewDefinitions(headers) {
     defs['OPENING_'+person]={headers:['Product Name','Qty Ordered (reference)','Opening Qty','Unit','Short Qty (reference)','Status','Count Date','Count ID','Notes'],formulas:[filter([lookup(o('ProductID'),'PRODUCTS','ProductID','Name'),o('QtyOrdered'),o('Qty'),lookup(o('ProductID'),'PRODUCTS','ProductID','IssueUOM'),'IF('+o('QtyOrdered')+'="","",'+o('QtyOrdered')+'-'+o('QtyReceived')+')',o('Status'),o('Date'),o('CountID'),o('Notes')],[o('LocationID')+'="'+loc+'"'])],dateColumns:[6]};
     var ids='FILTER('+p('ProductID')+','+p('Active')+'=TRUE)';
     var onHandExpr=sum(1,loc,false)+'-'+sum(-1,loc,false);
-    var stockHeaders=['Product','Unit','On Hand','Reserved','Available','Unit Price (Rs)','Total Value (Rs)'];
+    var availableExpr='('+onHandExpr+')-('+sum(-1,loc,true)+')';
+    var stockHeaders=['Product','Unit','On Hand','Reserved','Available','Available (Pack)','Unit Price (Rs)','Total Value (Rs)'];
     var stockFormulas=[
       '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('Name')+'),id))))',
       '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('IssueUOM')+'),""))))',
       '=MAP('+ids+',LAMBDA(id,IF(id="","",'+onHandExpr+')))',
       '=MAP('+ids+',LAMBDA(id,IF(id="","",'+sum(-1,loc,true)+')))',
-      '=MAP('+ids+',LAMBDA(id,IF(id="","",('+onHandExpr+')-('+sum(-1,loc,true)+'))))',
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",'+availableExpr+')))',
+      // Available (Pack): the same "12 TUBE + 30 ML" breakdown the app shows, for a product
+      // bought in a bigger unit than it's issued in. Blank when conversion is 1 (nothing to
+      // break down) or there's nothing available -- the Available column already covers that.
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",LET(avail,'+availableExpr+',conv,IFNA(XLOOKUP(id,'+p('ProductID')+','+p('ConvFactor')+'),1),puom,IFNA(XLOOKUP(id,'+p('ProductID')+','+p('PurchaseUOM')+'),""),uom,IFNA(XLOOKUP(id,'+p('ProductID')+','+p('IssueUOM')+'),""),IF(OR(conv<=1,avail<=0),"",LET(full,FLOOR(avail/conv+0.0000001),loose,ROUND(avail-full*conv,2),full&" "&puom&IF(loose>0," + "&loose&" "&uom,"")))))))',
       // Unit Price (Rs) mirrors PRODUCTS' own column (itself pulled from PURCHASE_TRACKER) --
       // blank when that product has no tracked purchase price yet.
       '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('Unit Price (Rs)')+'),""))))',
