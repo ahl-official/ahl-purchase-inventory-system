@@ -194,7 +194,7 @@ function getCatalogue(ctx: Ctx) {
     products: ctx.products.filter((r) => isTruthy(r.Active)).map((r) => ({
       id: r.ProductID, name: r.Name, categoryId: r.CategoryID, productType: r.ProductType || "Consumable",
       uom: r.IssueUOM, purchaseUom: r.PurchaseUOM, vendorId: r.VendorID || "", conversion: Number(r.ConvFactor) || 1,
-      cost: Number(r.Cost) || 0, reorderLevel: Number(r.ReorderLevel) || 0, balance: null,
+      cost: Number(r.Cost) || 0, unitPrice: Number(r["Unit Price (Rs)"]) || 0, reorderLevel: Number(r.ReorderLevel) || 0, balance: null,
     })),
     people: ctx.people.filter((r) => isTruthy(r.Active)).map((r) => ({ id: r.UserID, name: r.Name, role: appRole(r.Role) || r.Role, locationId: r.LocationID })),
     categories: list("CATEGORY"), vendors: list("VENDOR"), locations: list("LOCATION"), receivers: list("RECEIVER"), recipients: list("RECIPIENT"),

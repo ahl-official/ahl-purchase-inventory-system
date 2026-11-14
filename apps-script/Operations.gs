@@ -20,7 +20,7 @@ function getCatalogue(options) {
   var productRows = includeInactive ? allRows : allRows.filter(function(r){return isTruthy(r.Active);});
   return {
     products: productRows.map(function (r) {
-      return { id:r.ProductID, name:r.Name, categoryId:r.CategoryID, productType:r.ProductType || 'Consumable', uom:r.IssueUOM, purchaseUom:r.PurchaseUOM, vendorId:r.VendorID || '', conversion:Number(r.ConvFactor) || 1, cost:Number(r.Cost) || 0, reorderLevel:Number(r.ReorderLevel) || 0, balance:null, active:isTruthy(r.Active) };
+      return { id:r.ProductID, name:r.Name, categoryId:r.CategoryID, productType:r.ProductType || 'Consumable', uom:r.IssueUOM, purchaseUom:r.PurchaseUOM, vendorId:r.VendorID || '', conversion:Number(r.ConvFactor) || 1, cost:Number(r.Cost) || 0, unitPrice:Number(r['Unit Price (Rs)']) || 0, reorderLevel:Number(r.ReorderLevel) || 0, balance:null, active:isTruthy(r.Active) };
     }),
     // Explicit whitelist: never expose login or password fields.
     people: readAll('PEOPLE').filter(function (r) { return isTruthy(r.Active); }).map(function (r) { return { id:r.UserID, name:r.Name, role:appRole(r.Role) || r.Role, locationId:r.LocationID }; }),

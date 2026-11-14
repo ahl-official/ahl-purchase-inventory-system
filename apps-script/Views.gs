@@ -4,6 +4,7 @@ function inventoryViewDefinitions(headers) {
   function ref(tab,key) {var i=headers[tab].indexOf(key);if(i<0)throw new Error('Missing '+tab+'.'+key);var c=col(i);return tab+'!'+c+'2:'+c;}
   function l(k){return ref('LEDGER',k);}function p(k){return ref('PRODUCTS',k);}function o(k){return ref('OPENING_COUNTS',k);}function po(k){return ref('PURCHASE_ORDERS',k);}
   function lookup(ids,tab,key,val){return 'IFNA(XLOOKUP('+ids+','+ref(tab,key)+','+ref(tab,val)+'),'+ids+')';}
+  function numLookup(ids,tab,key,val,fallback){return 'IFNA(XLOOKUP('+ids+','+ref(tab,key)+','+ref(tab,val)+'),'+(fallback===undefined?0:fallback)+')';}
   function array(expr){return '=ARRAYFORMULA('+expr+')';}
   function filter(parts,conditions){return array('IFNA(FILTER({'+parts.join(',')+'},'+conditions.join(',')+'),"")');}
   function sum(direction,location,pending){return 'SUMIFS('+l('QtyBase')+','+l('ProductID')+',id,'+l('LocationID')+',"'+location+'",'+l('Direction')+','+direction+','+l('Status')+',"<>VOID",'+l('Status')+',"'+(pending?'PENDING_CONFIRM':'<>PENDING_CONFIRM')+'")';}
@@ -45,11 +46,16 @@ function inventoryViewDefinitions(headers) {
   function sortedFilter(parts,conditions){return array('IFERROR(SORT(FILTER({'+parts.join(',')+'},'+conditions.join(',')+'),1,TRUE),"")');}
   defs.HANDOVER_TRACKER={headers:['Date','Product Name','Qty','Unit','Destination','Receiver','Type','Status','Handover ID','Notes'],formulas:[sortedFilter(movement,[l('Type')+'="HANDOVER"',l('Direction')+'=1'])],dateColumns:[0]};
   defs.ISSUE_HISTORY={headers:['Date','Product Name','Qty','Unit','Location','Technician','Type','Status','Reference','Notes'],formulas:[filter(movement,['('+l('Type')+'="ISSUE")+('+l('Type')+'="RETURN")+('+l('Type')+'="DAMAGE")'])],dateColumns:[0]};
-  defs.SALON_ISSUES={headers:['Date','Product','Quantity','Unit','Technician','Category','Business unit','Note'],formulas:[sortedFilter([
+  // Price (Rs) is qty x this product's latest purchase price (PRODUCTS' Unit Price (Rs),
+  // itself pulled from PURCHASE_TRACKER), divided back to the stock unit this row's Qty is in --
+  // a live reference value, not a historical cost snapshot of what that specific issue cost.
+  var salonIssuePricePerUnit='('+numLookup(l('ProductID'),'PRODUCTS','ProductID','Unit Price (Rs)',0)+'/'+numLookup(l('ProductID'),'PRODUCTS','ProductID','ConvFactor',1)+')';
+  defs.SALON_ISSUES={headers:['Date','Product','Quantity','Unit','Price (Rs)','Technician','Category','Business unit','Note'],formulas:[sortedFilter([
     l('Date'),
     lookup(l('ProductID'),'PRODUCTS','ProductID','Name'),
     l('Qty'),
     l('UOM'),
+    'IF('+salonIssuePricePerUnit+'<=0,"",ROUND('+l('Qty')+'*'+salonIssuePricePerUnit+',2))',
     lookup(l('PersonID'),'PEOPLE','UserID','Name'),
     lookup(l('CategoryID'),'LISTS','Code','Name'),
     l('BusinessUnit'),
