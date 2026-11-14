@@ -13,13 +13,19 @@ function inventoryViewDefinitions(headers) {
     var loc=person==='SATVIK'?'LOC-01':'LOC-02';
     defs['OPENING_'+person]={headers:['Product Name','Qty Ordered (reference)','Opening Qty','Unit','Short Qty (reference)','Status','Count Date','Count ID','Notes'],formulas:[filter([lookup(o('ProductID'),'PRODUCTS','ProductID','Name'),o('QtyOrdered'),o('Qty'),lookup(o('ProductID'),'PRODUCTS','ProductID','IssueUOM'),'IF('+o('QtyOrdered')+'="","",'+o('QtyOrdered')+'-'+o('QtyReceived')+')',o('Status'),o('Date'),o('CountID'),o('Notes')],[o('LocationID')+'="'+loc+'"'])],dateColumns:[6]};
     var ids='FILTER('+p('ProductID')+','+p('Active')+'=TRUE)';
-    var stockHeaders=['Product','Unit','On Hand','Reserved','Available'];
+    var onHandExpr=sum(1,loc,false)+'-'+sum(-1,loc,false);
+    var stockHeaders=['Product','Unit','On Hand','Reserved','Available','Unit Price (Rs)','Total Value (Rs)'];
     var stockFormulas=[
       '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('Name')+'),id))))',
       '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('IssueUOM')+'),""))))',
-      '=MAP('+ids+',LAMBDA(id,IF(id="","",'+sum(1,loc,false)+'-'+sum(-1,loc,false)+')))',
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",'+onHandExpr+')))',
       '=MAP('+ids+',LAMBDA(id,IF(id="","",'+sum(-1,loc,true)+')))',
-      '=MAP('+ids+',LAMBDA(id,IF(id="","",('+sum(1,loc,false)+'-'+sum(-1,loc,false)+')-('+sum(-1,loc,true)+'))))'
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",('+onHandExpr+')-('+sum(-1,loc,true)+'))))',
+      // Unit Price (Rs) mirrors PRODUCTS' own column (itself pulled from PURCHASE_TRACKER) --
+      // blank when that product has no tracked purchase price yet.
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",IFNA(XLOOKUP(id,'+p('ProductID')+','+p('Unit Price (Rs)')+'),""))))',
+      // Total Value (Rs) = On Hand (stock units) x price per stock unit (purchase-unit price / ConvFactor).
+      '=MAP('+ids+',LAMBDA(id,IF(id="","",LET(price,IFNA(XLOOKUP(id,'+p('ProductID')+','+p('Unit Price (Rs)')+'),0),conv,IFNA(XLOOKUP(id,'+p('ProductID')+','+p('ConvFactor')+'),1),IF(price<=0,"",ROUND(('+onHandExpr+')*price/conv,2))))))'
     ];
     var stockDates=[];
     if(person==='HITESH'){
