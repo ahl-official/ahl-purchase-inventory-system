@@ -14,12 +14,19 @@ import { auth } from "@/lib/auth";
 import { callAppsScript, type AppsScriptAction } from "@/lib/api";
 import { readDirect, DIRECT_READ_ACTIONS, type DirectReadAction } from "@/lib/sheets-direct";
 import { writeDirect, DIRECT_WRITE_ACTIONS, type DirectWriteAction } from "@/lib/sheets-write";
+import { readFms, writeFms, DIRECT_FMS_READ_ACTIONS, DIRECT_FMS_WRITE_ACTIONS, type DirectFmsReadAction, type DirectFmsWriteAction } from "@/lib/sheets-fms";
 
 function isDirectReadAction(action: AppsScriptAction): action is DirectReadAction {
   return (DIRECT_READ_ACTIONS as readonly string[]).includes(action);
 }
 function isDirectWriteAction(action: AppsScriptAction): action is DirectWriteAction {
   return (DIRECT_WRITE_ACTIONS as readonly string[]).includes(action);
+}
+function isDirectFmsReadAction(action: AppsScriptAction): action is DirectFmsReadAction {
+  return (DIRECT_FMS_READ_ACTIONS as readonly string[]).includes(action);
+}
+function isDirectFmsWriteAction(action: AppsScriptAction): action is DirectFmsWriteAction {
+  return (DIRECT_FMS_WRITE_ACTIONS as readonly string[]).includes(action);
 }
 
 /** `CODE: message` -> {error, message}, the same split Code.gs does for a thrown handler error. */
@@ -57,7 +64,6 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "person.add": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "inventoryReport.read": ["PurchaseCoordinator", "Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
-  "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   "stock.receiveOrders": ["PurchaseCoordinator", "Admin"],
   // Hitesh can raise his own requests here; processPurchaseRequest on the
@@ -73,6 +79,12 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "opening.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.approve": ["Admin"],
   "dashboard.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "fms.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "fms.create": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "fms.applied": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "fms.billTally": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "fms.investigate": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "fms.return": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 
 function isKnownAction(value: unknown): value is SessionAction {
@@ -154,6 +166,30 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
       }
       // else: not yet ported -- fall through to Apps Script.
+    }
+  }
+
+  // FMS actions live entirely in the separate Inventory_FMS spreadsheet (see sheets-fms.ts).
+  // Apps Script has no concept of that sheet, so these never fall through to it -- any
+  // failure here is the final answer, same as a direct write once it has started.
+  if (isDirectFmsReadAction(action)) {
+    try {
+      const data_ = await readFms(action, actor);
+      return NextResponse.json({ ok: true, data: data_ }, { status: 200 });
+    } catch (err) {
+      console.error(`[POST /api/gas] readFms failed for ${action}:`, err);
+      const raw = err instanceof Error ? err.message : String(err);
+      return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
+    }
+  }
+  if (isDirectFmsWriteAction(action)) {
+    try {
+      const data_ = await writeFms(action, actor, (data as Record<string, unknown>) ?? {});
+      return NextResponse.json({ ok: true, data: data_ }, { status: 200 });
+    } catch (err) {
+      console.error(`[POST /api/gas] writeFms failed for ${action}:`, err);
+      const raw = err instanceof Error ? err.message : String(err);
+      return NextResponse.json({ ok: false, ...splitError(raw) }, { status: 200 });
     }
   }
 

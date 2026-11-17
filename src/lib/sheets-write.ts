@@ -922,42 +922,35 @@ async function handleStockIssue(token: string, actor: string, ctx: Ctx, data: Re
   return { handoverId, newBalance: balance - total, uom: product.IssueUOM };
 }
 
-/** Ported 1:1 from Ledger.gs processRetailSale. */
-async function handleRetailSale(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
-  const actorRole = appRole((getUser(ctx, actor) || {}).Role);
-  const expectedLocation = actorLocation(ctx, actor);
-  const locationId = String(data.fromLocationId || expectedLocation);
-  if (actorRole !== "Admin" && locationId !== expectedLocation) throw new Error("FORBIDDEN: You can sell only from your own stock location.");
-  if (!data.productId) throw new Error("VALIDATION: No product selected.");
+/**
+ * Deducts a retail handover's quantity from the actor's own stock location (same rule as
+ * stock.issue/the old stock.retailSale: your own location unless Admin). Called from
+ * src/lib/sheets-fms.ts when a handover is recorded on the "Retail & Sale FMS" tab, so a
+ * product handed out through that separate FMS tracker still moves real inventory here --
+ * stored as a RETAIL_SALE ledger row (same Type the old retail-sale form used), so existing
+ * history filters and the monthly inventory report keep recognizing it with no extra plumbing.
+ */
+export async function recordFmsRetailDeduction(actor: string, data: { productId: string; qty: number; notes?: string; handoverId: string; date?: string }): Promise<{ newBalance: number; uom: string; locationId: string }> {
+  const token = await getWriteAccessToken();
+  const ctx = await loadContext();
+  const user = getUser(ctx, actor);
+  if (!user || !isTruthy(user.Active)) throw new Error("FORBIDDEN: Your account could not be found or is inactive.");
+  const locationId = actorLocation(ctx, actor);
   const product = getProduct(ctx, data.productId);
   if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
-  if (!["Retail", "Both"].includes(String(product.ProductType))) throw new Error("VALIDATION: This product is not marked for retail sale.");
-
   const qty = positiveQuantity(data.qty, product, false);
-  const qtyBase = qty * (Number(product.ConvFactor) || 1);
-  const clientName = String(data.clientName || "").trim();
-  const clientPhone = String(data.clientPhone || "").trim();
-  const techId = String(data.recipientUserId || "").trim();
-  if (!clientName) throw new Error("VALIDATION: Record who bought this.");
-  if (!techId || !ctx.people.some((r) => r.UserID === techId && isTruthy(r.Active))) throw new Error("VALIDATION: Select a technician.");
-
   const balance = availableBalance(ctx, data.productId, locationId);
-  if (qtyBase > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand at ${locationId}, tried to sell ${qtyBase}.`);
+  if (qty > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand at ${locationId}, tried to give ${qty} for FMS handover ${data.handoverId}.`);
 
   const txnId = nextId("TXN");
-  const notesParts = [`Client: ${clientName}`];
-  if (clientPhone) notesParts.push(`Phone: ${clientPhone}`);
-  if (data.refNo) notesParts.push(`Ref: ${String(data.refNo).trim()}`);
-  if (data.notes) notesParts.push(String(data.notes).trim());
-  const saleAmount = qtyBase * (Number(product.Cost) || 0);
+  const amount = qty * (Number(product.Cost) || 0);
   await appendRow(token, "LEDGER", {
     TxnID: txnId, Date: dateToSerial(resolveTxnDate(data)), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
-    UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase, LocationID: locationId, PersonID: techId,
-    Amount: saleAmount, Actor: actor, Status: "SOLD", Notes: notesParts.join(" | "),
-    ProductName: product.Name, TotalAmount: saleAmount,
+    UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, Amount: amount, Actor: actor, Status: "SOLD",
+    Notes: `FMS handover ${data.handoverId}${data.notes ? ` | ${data.notes}` : ""}`, ProductName: product.Name, TotalAmount: amount,
   });
-  await auditWrite(token, actor, "stock.retailSale", txnId, { productId: data.productId, qty, clientName });
-  return { txnId, newBalance: balance - qtyBase, uom: product.IssueUOM };
+  await auditWrite(token, actor, "fms.create", txnId, { productId: data.productId, qty, locationId, handoverId: data.handoverId });
+  return { newBalance: balance - qty, uom: String(product.IssueUOM), locationId };
 }
 
 /** Ported 1:1 from Operations.gs processStockAdjustment. */
@@ -1380,7 +1373,7 @@ async function handleStockReceiveOrders(token: string, actor: string, ctx: Ctx, 
 
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.discardDraft", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.retailSale", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.discardDraft", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -1404,7 +1397,6 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "opening.submit": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.approve": ["Admin"],
   "stock.issue": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
-  "stock.retailSale": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.adjust": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.handover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "stock.confirmHandover": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
@@ -1450,7 +1442,6 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "opening.submit": result = await handleOpeningStockSubmit(token, actor, ctx, data); break;
       case "opening.approve": result = await handleOpeningStockApprove(token, actor, ctx, data); break;
       case "stock.issue": result = await handleStockIssue(token, actor, ctx, data); break;
-      case "stock.retailSale": result = await handleRetailSale(token, actor, ctx, data); break;
       case "stock.adjust": result = await handleStockAdjustment(token, actor, ctx, data); break;
       case "stock.handover": result = await handleStockHandover(token, actor, ctx, data); break;
       case "stock.confirmHandover": result = await handleConfirmHandover(token, actor, ctx, data); break;

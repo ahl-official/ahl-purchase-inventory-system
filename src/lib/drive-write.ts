@@ -57,16 +57,28 @@ async function driveFetch(token: string, path: string, init?: RequestInit) {
   return json;
 }
 
+/**
+ * "AHL Flow Bills" now lives in the "AHL-Flow-Master" Shared Drive, not a regular My Drive
+ * folder shared to the service account -- a plain service account has zero personal storage
+ * quota, so Drive refuses to let it create new files anywhere outside an actual Shared Drive,
+ * no matter what sharing role it holds on a My Drive folder. Every call here needs
+ * supportsAllDrives (writes) / includeItemsFromAllDrives (reads) for that reason, and a search
+ * with no known parent needs corpora=allDrives too, or it silently searches My Drive only and
+ * never finds anything in a Shared Drive.
+ */
+const SHARED_DRIVE_PARAMS = "supportsAllDrives=true&includeItemsFromAllDrives=true";
+
 /** Finds a non-trashed folder by exact name (and optionally parent), the same lookup DriveApp.getFoldersByName()/getFoldersByName() does. */
 async function findFolder(token: string, name: string, parentId?: string): Promise<string | null> {
   const clauses = [`name = '${name.replace(/'/g, "\\'")}'`, "mimeType = 'application/vnd.google-apps.folder'", "trashed = false"];
   if (parentId) clauses.push(`'${parentId}' in parents`);
-  const json = await driveFetch(token, `/files?q=${encodeURIComponent(clauses.join(" and "))}&fields=files(id,name)`);
+  const corpora = parentId ? "" : "&corpora=allDrives";
+  const json = await driveFetch(token, `/files?q=${encodeURIComponent(clauses.join(" and "))}&fields=files(id,name)&${SHARED_DRIVE_PARAMS}${corpora}`);
   return json.files?.[0]?.id || null;
 }
 
 async function createFolder(token: string, name: string, parentId?: string): Promise<string> {
-  const json = await driveFetch(token, "/files?fields=id", {
+  const json = await driveFetch(token, `/files?fields=id&${SHARED_DRIVE_PARAMS}`, {
     method: "POST",
     body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: parentId ? [parentId] : undefined }),
   });
@@ -113,7 +125,7 @@ function buildMultipartBody(boundary: string, metadata: object, mimeType: string
 async function uploadFile(token: string, args: { name: string; mimeType: string; bytes: Buffer; parentId: string; description: string }): Promise<{ id: string; webViewLink: string }> {
   const boundary = `ahlflow_${Date.now()}`;
   const body = buildMultipartBody(boundary, { name: args.name, parents: [args.parentId], description: args.description }, args.mimeType, args.bytes);
-  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink", {
+  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&${SHARED_DRIVE_PARAMS}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` },
     body: body as unknown as BodyInit,
@@ -126,7 +138,7 @@ async function uploadFile(token: string, args: { name: string; mimeType: string;
 
 async function setAnyoneReader(token: string, fileId: string): Promise<void> {
   try {
-    await driveFetch(token, `/files/${fileId}/permissions`, { method: "POST", body: JSON.stringify({ role: "reader", type: "anyone" }) });
+    await driveFetch(token, `/files/${fileId}/permissions?supportsAllDrives=true`, { method: "POST", body: JSON.stringify({ role: "reader", type: "anyone" }) });
   } catch (err) {
     console.warn(`Could not set link sharing on ${fileId}:`, err);
   }
@@ -135,7 +147,7 @@ async function setAnyoneReader(token: string, fileId: string): Promise<void> {
 // ---------------------------------------------------------------- public entry point
 
 export interface BillPhotoInput { base64: string; mimeType?: string; fileName?: string }
-export interface BillPhotoContext { kind?: "BILL" | "PRODUCT"; txnId?: string; actor?: string; vendorId?: string; poId?: string }
+export interface BillPhotoContext { kind?: "BILL" | "PRODUCT" | "FMS_PROOF"; txnId?: string; actor?: string; vendorId?: string; poId?: string }
 export interface SavedBillPhoto { fileId: string; url: string; downloadUrl: string; name: string; sizeBytes: number }
 
 /** Ported 1:1 from Drive.gs saveBillPhoto. `publicLink` is the caller-resolved BillPublicLink SETTING. */

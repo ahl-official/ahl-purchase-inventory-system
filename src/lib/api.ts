@@ -39,7 +39,6 @@ export type AppsScriptAction =
   | "inventoryReport.read"
   | "auth.login"
   | "stock.issue"
-  | "stock.retailSale"
   | "stock.receive"
   | "stock.receiveOrders"
   | "purchase.request"
@@ -51,7 +50,13 @@ export type AppsScriptAction =
   | "opening.submit"
   | "opening.list"
   | "opening.approve"
-  | "dashboard.read";
+  | "dashboard.read"
+  | "fms.list"
+  | "fms.create"
+  | "fms.applied"
+  | "fms.billTally"
+  | "fms.investigate"
+  | "fms.return";
 
 export interface AppsScriptPayload<T = unknown> {
   action: AppsScriptAction;
