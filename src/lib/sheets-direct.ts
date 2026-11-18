@@ -13,7 +13,7 @@ import { recentHistory } from './movement-history';
 export type Row = Record<string, string | number>;
 export interface Ctx {
   products: Row[]; people: Row[]; lists: Row[]; ledger: Row[];
-  purchaseOrders: Row[]; requests: Row[]; openingCounts: Row[];
+  purchaseOrders: Row[]; requests: Row[]; openingCounts: Row[]; serviceRecipes: Row[];
   configCache: Record<string, string> | null;
 }
 
@@ -51,7 +51,7 @@ async function getAccessToken(): Promise<string> {
 
 // ---------------------------------------------------------------- sheet I/O
 
-const TABS = ["PRODUCTS", "PEOPLE", "LISTS", "LEDGER", "PURCHASE_ORDERS", "REQUESTS", "OPENING_COUNTS"] as const;
+const TABS = ["PRODUCTS", "PEOPLE", "LISTS", "LEDGER", "PURCHASE_ORDERS", "REQUESTS", "OPENING_COUNTS", "SERVICE_RECIPES"] as const;
 
 function parseTable(values: unknown[][]): Row[] {
   if (!values.length) return [];
@@ -80,6 +80,7 @@ export async function loadContext(): Promise<Ctx> {
   return {
     products: byTab.PRODUCTS, people: byTab.PEOPLE, lists: byTab.LISTS, ledger: byTab.LEDGER,
     purchaseOrders: byTab.PURCHASE_ORDERS, requests: byTab.REQUESTS, openingCounts: byTab.OPENING_COUNTS,
+    serviceRecipes: byTab.SERVICE_RECIPES,
     configCache: null,
   };
 }
@@ -187,14 +188,15 @@ export function computePendingHandoverOutFromRows(rows: Row[], productId: unknow
 
 // ---------------------------------------------------------------- read actions, ported 1:1 from Operations.gs / Ledger.gs
 
-function getCatalogue(ctx: Ctx) {
+function getCatalogue(ctx: Ctx, includeInactive = false) {
   const lists = ctx.lists.filter((r) => isTruthy(r.Active));
   const list = (type: string) => lists.filter((r) => r.Type === type).map((r) => ({ id: r.Code, name: r.Name, unit: r.Extra || "", dot: "bg-chart-1" }));
   return {
-    products: ctx.products.filter((r) => isTruthy(r.Active)).map((r) => ({
+    products: ctx.products.filter((r) => includeInactive || isTruthy(r.Active)).map((r) => ({
       id: r.ProductID, name: r.Name, categoryId: r.CategoryID, productType: r.ProductType || "Consumable",
       uom: r.IssueUOM, purchaseUom: r.PurchaseUOM, vendorId: r.VendorID || "", conversion: Number(r.ConvFactor) || 1,
       cost: Number(r.Cost) || 0, unitPrice: Number(r["Unit Price (Rs)"]) || 0, reorderLevel: Number(r.ReorderLevel) || 0, balance: null,
+      active: isTruthy(r.Active),
     })),
     people: ctx.people.filter((r) => isTruthy(r.Active)).map((r) => ({ id: r.UserID, name: r.Name, role: appRole(r.Role) || r.Role, locationId: r.LocationID })),
     categories: list("CATEGORY"), vendors: list("VENDOR"), locations: list("LOCATION"), receivers: list("RECEIVER"), recipients: list("RECIPIENT"),
@@ -327,6 +329,21 @@ function getDashboard(ctx: Ctx, actor: string) {
   return { stock, pendingHandovers: listPendingHandovers(ctx, actor), openRequests, recentActivity, vendorRates };
 }
 
+/** Groups the SERVICE_RECIPES tab's flat rows (one row per ingredient) into one entry per
+ * service, so the app can show "pick a service -> here's every product it needs" without
+ * the client re-grouping a flat list itself. */
+function getServiceRecipes(ctx: Ctx) {
+  const byService = new Map<string, { productId: string; productName: string; qty: number; unit: string }[]>();
+  ctx.serviceRecipes.forEach((r) => {
+    const service = String(r.ServiceName || "").trim();
+    if (!service) return;
+    const list = byService.get(service) || [];
+    list.push({ productId: String(r.ProductID), productName: String(r.ProductName), qty: Number(r.Qty) || 0, unit: String(r.Unit || "") });
+    byService.set(service, list);
+  });
+  return [...byService.entries()].map(([service, items]) => ({ service, items })).sort((a, b) => a.service.localeCompare(b.service));
+}
+
 function getOperations(ctx: Ctx, actor: string) {
   return {
     myLocationId: actorLocation(ctx, actor),
@@ -335,6 +352,7 @@ function getOperations(ctx: Ctx, actor: string) {
     dashboard: getDashboard(ctx, actor),
     orders: listPurchaseOrders(ctx),
     opening: listOpeningCounts(ctx, actor),
+    serviceRecipes: getServiceRecipes(ctx),
     history: recentHistory(ctx.ledger.map((r) => ({ txnId: String(r.TxnID), date: serialToIso(r.Date), productId: String(r.ProductID), qty: Number(r.Qty), uom: String(r.UOM), type: String(r.Type), locationId: String(r.LocationID), personId: String(r.PersonID||''), status: String(r.Status), notes: String(r.Notes || ''), vendorId:String(r.VendorID||''), invoiceNo:String(r.InvoiceNo||''), receiptId:String(r.ReceiptID||''), poRef:String(r.PORef||''), billPhotoUrl:String(r.BillPhotoURL||''), amount:r.Amount===''||r.Amount==null?null:Number(r.Amount), gstAmount:r.GSTAmount===''||r.GSTAmount==null?null:Number(r.GSTAmount) }))),
   };
 }
@@ -394,7 +412,7 @@ export async function readDirect(action: DirectReadAction, actor: string, data: 
 
   switch (action) {
     case "operations.read": return getOperations(ctx, actor);
-    case "catalogue.read": return getCatalogue(ctx);
+    case "catalogue.read": return getCatalogue(ctx, isTruthy(data?.includeInactive));
     case "dashboard.read": return getDashboard(ctx, actor);
     case "handover.list": return listPendingHandovers(ctx, actor);
     case "opening.list": return listOpeningCounts(ctx, actor);

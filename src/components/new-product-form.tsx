@@ -11,8 +11,8 @@ const TYPES = [
   ['Retail', 'Sold to clients'],
   ['Both', 'Used in services and also sold'],
 ] as const;
-export const PURCHASE_UNITS = ['TUBE', 'BTL', 'CAN', 'PCS', 'BOX', 'KIT', 'ROLL', 'KG'];
-export const STOCK_UNITS = ['ML', 'GM', 'PCS', 'ROLL', 'MTR', 'KG'];
+export const PURCHASE_UNITS = ['TUBE', 'BTL', 'CAN', 'PCS', 'BOX', 'PACK', 'KIT', 'ROLL', 'KG', 'PAIR', 'SPRAY'];
+export const STOCK_UNITS = ['ML', 'GM', 'PCS', 'ROLL', 'MTR', 'KG', 'PAIR', 'SPRAY'];
 
 export function NewProductForm({ catalogue, onCreated, onPrintLabel }: { catalogue: Catalogue; onCreated: () => void; onPrintLabel: (productId: string) => void }) {
   const [name, setName] = useState(''), [brand, setBrand] = useState(''), [type, setType] = useState('Consumable');

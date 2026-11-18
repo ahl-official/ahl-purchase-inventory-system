@@ -79,6 +79,7 @@ const ACTION_ROLES: Record<SessionAction, string[]> = {
   "opening.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "opening.approve": ["Admin"],
   "dashboard.read": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
+  "service.record": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "fms.list": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "fms.create": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
   "fms.applied": ["PurchaseCoordinator", "ProductDistributor", "Admin"],

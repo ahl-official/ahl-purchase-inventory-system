@@ -51,6 +51,7 @@ export type AppsScriptAction =
   | "opening.list"
   | "opening.approve"
   | "dashboard.read"
+  | "service.record"
   | "fms.list"
   | "fms.create"
   | "fms.applied"

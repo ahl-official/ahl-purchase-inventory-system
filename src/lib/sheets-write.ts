@@ -129,7 +129,7 @@ async function setCellFormula(token: string, sheetName: string, a1: string, form
 
 // Dated record tabs stay oldest-first, so a backfilled entry lands on its real date
 // instead of at the bottom. Matches Db.gs sortTabByDate.
-const SORT_BY_DATE_TABS = new Set(["LEDGER", "PURCHASE_ORDERS", "REQUESTS", "OPENING_COUNTS", "OPERATIONS", "AUDIT"]);
+const SORT_BY_DATE_TABS = new Set(["LEDGER", "PURCHASE_ORDERS", "REQUESTS", "OPENING_COUNTS", "OPERATIONS", "AUDIT", "SERVICE_RECORDS"]);
 
 /** Sorts a tab's data rows by Date (or Timestamp on AUDIT), oldest first. sortRange only
  * reorders whole rows -- no cell is ever dropped or overwritten -- so it is safe after every append. */
@@ -923,6 +923,64 @@ async function handleStockIssue(token: string, actor: string, ctx: Ctx, data: Re
 }
 
 /**
+ * Records a salon/hair service performed for a client: deducts every product the service's
+ * SERVICE_RECIPES recipe calls for (quantities as edited on the form, not necessarily the
+ * recipe defaults) from the technician's own stock location, same rule as stock.issue, then
+ * logs one summary row in SERVICE_RECORDS. Ledger rows use a new Type, "SERVICE_CONSUMPTION",
+ * so this doesn't collide with ISSUE/RETAIL_SALE reporting that already keys off Type.
+ */
+async function handleServiceRecord(token: string, actor: string, ctx: Ctx, data: Record<string, unknown>) {
+  const locationId = actorLocation(ctx, actor);
+  const clientName = String(data.clientName || "").trim();
+  const service = String(data.service || "").trim();
+  const technicianId = String(data.technicianId || "").trim();
+  if (!clientName) throw new Error("VALIDATION: Record the client's name.");
+  if (!service) throw new Error("VALIDATION: Select a service.");
+  const technician = ctx.people.find((r) => r.UserID === technicianId && isTruthy(r.Active));
+  if (!technician) throw new Error("VALIDATION: Select a technician.");
+  const lines = data.lines as Array<{ productId: string; qty: unknown }> | undefined;
+  if (!lines || !lines.length) throw new Error("VALIDATION: No products for this service.");
+
+  // Same product can appear twice in a recipe (rare) -- aggregate before checking stock so
+  // it's checked against its combined quantity, not each line separately.
+  const qtyByProduct = new Map<string, number>();
+  for (const line of lines) {
+    const product = getProduct(ctx, line.productId);
+    if (!product) throw new Error(`UNKNOWN_PRODUCT: ${line.productId} is not in PRODUCTS.`);
+    const qty = positiveQuantity(line.qty, product, false);
+    qtyByProduct.set(line.productId, (qtyByProduct.get(line.productId) || 0) + qty);
+  }
+  for (const [productId, qty] of qtyByProduct) {
+    const product = getProduct(ctx, productId)!;
+    const balance = availableBalance(ctx, productId, locationId);
+    if (qty > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand for ${product.Name}, tried to use ${qty}.`);
+  }
+
+  const serviceRecordId = nextId("SVC");
+  const now = dateToSerial(resolveTxnDate(data));
+  let totalCost = 0;
+  for (const [productId, qty] of qtyByProduct) {
+    const product = getProduct(ctx, productId)!;
+    const amount = qty * (Number(product.Cost) || 0);
+    totalCost += amount;
+    await appendRow(token, "LEDGER", {
+      TxnID: nextId("TXN"), Date: now, Type: "SERVICE_CONSUMPTION", Direction: -1, ProductID: productId, Qty: qty,
+      UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, PersonID: technicianId,
+      Amount: amount, Actor: actor, Status: "CONSUMED", Notes: `Service: ${service} | Client: ${clientName} | ${serviceRecordId}`,
+      ProductName: product.Name, TotalAmount: amount,
+    });
+  }
+
+  await appendRow(token, "SERVICE_RECORDS", {
+    ServiceRecordID: serviceRecordId, Date: now, ClientName: clientName, Technician: technician.Name,
+    Service: service, LocationID: locationId, TotalCost: totalCost, Actor: actor, Notes: String(data.notes || ""),
+  });
+
+  await auditWrite(token, actor, "service.record", serviceRecordId, { clientName, service, technicianId, totalCost });
+  return { serviceRecordId, totalCost };
+}
+
+/**
  * Deducts a retail handover's quantity from the actor's own stock location (same rule as
  * stock.issue/the old stock.retailSale: your own location unless Admin). Called from
  * src/lib/sheets-fms.ts when a handover is recorded on the "Retail & Sale FMS" tab, so a
@@ -1373,7 +1431,7 @@ async function handleStockReceiveOrders(token: string, actor: string, ctx: Ctx, 
 
 // ---------------------------------------------------------------- entry point
 
-export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.discardDraft", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders"] as const;
+export const DIRECT_WRITE_ACTIONS = ["list.add", "person.add", "product.create", "product.setVendor", "product.editUnit", "product.delete", "product.restore", "order.create", "order.discardDraft", "order.cancel", "order.edit", "order.delete", "receipt.edit", "receipt.delete", "purchase.request", "purchase.approve", "purchase.approveMany", "opening.submit", "opening.approve", "stock.issue", "stock.adjust", "stock.handover", "stock.confirmHandover", "handover.cancel", "stock.receive", "stock.receiveOrders", "service.record"] as const;
 export type DirectWriteAction = (typeof DIRECT_WRITE_ACTIONS)[number];
 
 const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
@@ -1403,6 +1461,7 @@ const WRITE_ROLES: Record<DirectWriteAction, string[]> = {
   "handover.cancel": ["PurchaseCoordinator", "Admin"],
   "stock.receive": ["PurchaseCoordinator", "Admin"],
   "stock.receiveOrders": ["PurchaseCoordinator", "Admin"],
+  "service.record": ["PurchaseCoordinator", "ProductDistributor", "Admin"],
 };
 
 export async function writeDirect(action: DirectWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
@@ -1448,6 +1507,7 @@ export async function writeDirect(action: DirectWriteAction, actor: string, data
       case "handover.cancel": result = await handleHandoverCancel(token, actor, ctx, data); break;
       case "stock.receive": result = await handleStockReceive(token, actor, ctx, data); break;
       case "stock.receiveOrders": result = await handleStockReceiveOrders(token, actor, ctx, data); break;
+      case "service.record": result = await handleServiceRecord(token, actor, ctx, data); break;
     }
     await completeOperation(token, operationId, result);
     return result;
