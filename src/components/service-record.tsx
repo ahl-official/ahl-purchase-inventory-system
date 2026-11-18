@@ -28,10 +28,13 @@ export function ServiceRecord({ catalogue, stock, locationId, recipes, busy, onS
 
   const technicians = catalogue.people.filter(p => p.role === 'Technician');
   const availableOf = (productId: string) => stock.find(s => s.productId === productId)?.locationBalances?.[locationId] ?? 0;
+  // product.cost is already per issue unit (matches handleServiceRecord's ledger Amount
+  // calculation server-side) -- unlike unitPrice (the Unit Price (Rs) formula), which only
+  // has a value once a purchase has been recorded under this exact product name.
   const costOf = (line: ServiceLine) => {
     const p = catalogue.products.find(x => x.id === line.productId);
     if (!p || line.qty === '') return 0;
-    return Number(line.qty) * (p.unitPrice / (p.conversion || 1));
+    return Number(line.qty) * p.cost;
   };
   const totalCost = lines.reduce((sum, l) => sum + costOf(l), 0);
 
