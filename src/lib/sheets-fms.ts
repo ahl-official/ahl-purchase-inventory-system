@@ -196,16 +196,21 @@ async function handleFmsCreate(token: string, headers: string[], rows: FmsRow[],
   const rowNumber = findEmptyRow(rows);
   const handoverId = `FMS-${randomUUID().slice(0, 8).toUpperCase()}`;
 
-  // Deduct from the technician's own stock location in the MAIN inventory sheet before
-  // committing the FMS row, so an out-of-stock handover fails before anything is written,
-  // and the sale this handover represents always moves real inventory, not just this tracker.
-  const deduction = await recordFmsRetailDeduction(actor, { productId, qty: qtyGiven, notes: `FMS handover for ${clientName}`, handoverId, date: data.date as string | undefined });
-
+  // Write the FMS row FIRST, with "Handover Check" still blank (so the row is visible but
+  // not yet "complete" -- its Handover Timestamp formula only fires once Handover Check =
+  // "Handover OK"). Deducting stock SECOND, and only marking Handover OK after that succeeds,
+  // means a failure partway through always leaves a visible, traceable row instead of a
+  // silent stock deduction with no record anywhere -- the opposite order once let a deduction
+  // succeed while the row write failed after it, losing 50ML of real stock with no trace.
   await writeCells(token, headers, rowNumber, {
     "Handover ID": handoverId, Date: dateToSerial(resolveTxnDate(data)), Category: String(data.category || "").trim(),
     "Investment Level": String(data.investmentLevel || "").trim(), "Product Name": productName, "Qty Given": qtyGiven,
-    Technician: technician, "Client Name": clientName, Service: String(data.service || "").trim(), "Handover Check": "Handover OK",
+    Technician: technician, "Client Name": clientName, Service: String(data.service || "").trim(),
   });
+
+  const deduction = await recordFmsRetailDeduction(actor, { productId, qty: qtyGiven, notes: `FMS handover for ${clientName}`, handoverId, date: data.date as string | undefined });
+
+  await writeCells(token, headers, rowNumber, { "Handover Check": "Handover OK" });
   return { handoverId, rowNumber, newBalance: deduction.newBalance, uom: deduction.uom, locationId: deduction.locationId };
 }
 
