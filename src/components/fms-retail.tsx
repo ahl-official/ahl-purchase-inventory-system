@@ -75,7 +75,9 @@ export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { ca
 
   const technicians = Array.from(new Set(catalogue.people.filter(p => p.role === 'Technician').map(p => p.name)));
   const p = catalogue.products.find(x => x.id === productId);
-  const available = p ? (stock.find(s => s.productId === p.id)?.locationBalances?.[locationId] ?? 0) : 0;
+  // A client buys whole bottles/packs, not ml/gm -- show and collect qty in the product's
+  // purchase unit, converting down to the stock unit on hand to check real availability.
+  const available = p ? (stock.find(s => s.productId === p.id)?.locationBalances?.[locationId] ?? 0) / (p.conversion || 1) : 0;
   const open = (rows || []).filter(h => nextStep(h) !== 'closed');
   const closed = (rows || []).filter(h => nextStep(h) === 'closed');
 
@@ -104,9 +106,9 @@ export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { ca
     <Panel>
       <Section title="New handover" description="Hand a retail product to a technician for a client. Tracked through billing, investigation and return in the FMS tracker." />
       <form onSubmit={submitCreate} className="p-5 sm:p-6"><fieldset disabled={busy} className="grid min-w-0 gap-5 sm:grid-cols-2 disabled:opacity-60">
-        <Field title="Product" wide><ProductPicker products={catalogue.products} vendors={catalogue.vendors} vendorId="" value={productId} required unitOf={x => x.uom} onChange={id => { setProductId(id); const prod = catalogue.products.find(x => x.id === id); if (!category) setCategory(guessFmsCategory(prod?.productType)); }} /></Field>
-        {p && (available > 0 ? <p className="rounded-xl bg-brand-subtle p-3 text-sm text-brand sm:col-span-2">Available: <strong>{available} {p.uom}</strong></p> : <p className="rounded-xl bg-danger-subtle p-3 text-sm text-danger sm:col-span-2">Nothing in stock here yet for this product.</p>)}
-        <Field title={`Qty given${p?.uom ? ` (${p.uom})` : ''}`}><TextInput required disabled={!!p && available <= 0} type="number" min="0.001" max={available || undefined} step="any" value={qtyGiven} onChange={e => setQtyGiven(e.target.value)} /></Field>
+        <Field title="Product" wide><ProductPicker products={catalogue.products} vendors={catalogue.vendors} vendorId="" value={productId} required unitOf={x => x.purchaseUom} onChange={id => { setProductId(id); const prod = catalogue.products.find(x => x.id === id); if (!category) setCategory(guessFmsCategory(prod?.productType)); }} /></Field>
+        {p && (available > 0 ? <p className="rounded-xl bg-brand-subtle p-3 text-sm text-brand sm:col-span-2">Available: <strong>{Number(available.toFixed(2))} {p.purchaseUom}</strong></p> : <p className="rounded-xl bg-danger-subtle p-3 text-sm text-danger sm:col-span-2">Nothing in stock here yet for this product.</p>)}
+        <Field title={`Qty given${p?.purchaseUom ? ` (${p.purchaseUom})` : ''}`}><TextInput required disabled={!!p && available <= 0} type="number" min="0.001" max={available || undefined} step="any" value={qtyGiven} onChange={e => setQtyGiven(e.target.value)} /></Field>
         <Field title="Technician"><TextInput required list="fms-technicians" value={technician} onChange={e => setTechnician(e.target.value)} placeholder="Type or pick a name" /><datalist id="fms-technicians">{technicians.map(t => <option key={t} value={t} />)}</datalist></Field>
         <Field title="Client name"><TextInput required value={clientName} onChange={e => setClientName(e.target.value)} /></Field>
         <Field title="Service"><TextInput value={service} onChange={e => setService(e.target.value)} /></Field>
@@ -121,16 +123,16 @@ export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { ca
     <Panel>
       <Section title="Open handovers" description="Everything still waiting on applied confirmation, bill tally, investigation or return." button="Refresh" onClick={() => void load()} />
       {loading ? <p className="p-5 text-sm text-muted-foreground">Loading…</p> : !open.length ? <p className="p-5 text-sm text-muted-foreground">Nothing open right now.</p> : <ul className="divide-y">
-        {open.map(h => { const step = nextStep(h); const delayed = isDelayed(h); return <li key={h.handoverId} className="space-y-3 p-5">
+        {open.map(h => { const step = nextStep(h); const delayed = isDelayed(h); const unit = catalogue.products.find(x => x.name === h.productName)?.purchaseUom || ''; return <li key={h.handoverId} className="space-y-3 p-5">
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <div><p className="text-sm font-semibold">{h.productName} · {h.qtyGiven} · {h.technician}</p><p className="text-xs text-muted-foreground">{h.clientName}{h.service ? ` · ${h.service}` : ''} · {h.handoverId}</p></div>
+            <div><p className="text-sm font-semibold">{h.productName} · {h.qtyGiven} {unit} · {h.technician}</p><p className="text-xs text-muted-foreground">{h.clientName}{h.service ? ` · ${h.service}` : ''} · {h.handoverId}</p></div>
             <div className="flex flex-wrap items-center gap-2"><Badge text={h.finalStatus || 'Open'} tone={step === 'blocked' ? 'blocked' : 'open'} />{delayed && <Badge text="Delayed (bill tally > 1hr)" tone="blocked" />}</div>
           </div>
 
           {step === 'applied' && <div className="flex gap-2"><Button size="sm" disabled={busy} onClick={() => void submitApplied(h.handoverId, 'Yes')}>Applied to client</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => void submitApplied(h.handoverId, 'No')}>Not applied</Button></div>}
 
           {step === 'billTally' && <div className="grid gap-3 rounded-xl border p-3 sm:grid-cols-2">
-            <Field title="Qty on bill"><TextInput type="number" min="0" step="any" value={billForms[h.handoverId]?.qty || ''} onChange={e => setBillForms(b => ({ ...b, [h.handoverId]: { qty: e.target.value, billNo: b[h.handoverId]?.billNo || '', photo: b[h.handoverId]?.photo || null } }))} /></Field>
+            <Field title={`Qty on bill${unit ? ` (${unit})` : ''}`}><TextInput type="number" min="0" step="any" value={billForms[h.handoverId]?.qty || ''} onChange={e => setBillForms(b => ({ ...b, [h.handoverId]: { qty: e.target.value, billNo: b[h.handoverId]?.billNo || '', photo: b[h.handoverId]?.photo || null } }))} /></Field>
             <Field title="Bill no. / proof link (optional)"><TextInput value={billForms[h.handoverId]?.billNo || ''} onChange={e => setBillForms(b => ({ ...b, [h.handoverId]: { qty: b[h.handoverId]?.qty || '', billNo: e.target.value, photo: b[h.handoverId]?.photo || null } }))} /></Field>
             <div className="sm:col-span-2"><PhotoCapture label="Bill proof photo" onCapture={photo => setBillForms(b => ({ ...b, [h.handoverId]: { qty: b[h.handoverId]?.qty || '', billNo: b[h.handoverId]?.billNo || '', photo } }))} disabled={busy} /></div>
             <div className="sm:col-span-2"><Button size="sm" disabled={busy || !billForms[h.handoverId]?.qty} onClick={() => void submitBillTally(h.handoverId)}>Save bill tally</Button></div>
@@ -143,7 +145,7 @@ export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { ca
           </div>}
 
           {step === 'return' && <div className="flex flex-wrap items-end gap-3 rounded-xl border p-3">
-            <Field title={`Qty returned to inventory${h.qtyOutstanding != null ? ` (outstanding: ${h.qtyOutstanding})` : ''}`}><TextInput type="number" min="0" step="any" value={returnForms[h.handoverId] || ''} onChange={e => setReturnForms(r => ({ ...r, [h.handoverId]: e.target.value }))} /></Field>
+            <Field title={`Qty returned to inventory${unit ? ` (${unit})` : ''}${h.qtyOutstanding != null ? ` (outstanding: ${h.qtyOutstanding})` : ''}`}><TextInput type="number" min="0" step="any" value={returnForms[h.handoverId] || ''} onChange={e => setReturnForms(r => ({ ...r, [h.handoverId]: e.target.value }))} /></Field>
             <Button size="sm" disabled={busy || !returnForms[h.handoverId]} onClick={() => void submitReturn(h.handoverId)}>Record return</Button>
           </div>}
 

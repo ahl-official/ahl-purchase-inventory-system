@@ -996,19 +996,24 @@ export async function recordFmsRetailDeduction(actor: string, data: { productId:
   const locationId = actorLocation(ctx, actor);
   const product = getProduct(ctx, data.productId);
   if (!product) throw new Error(`UNKNOWN_PRODUCT: ${data.productId} is not in PRODUCTS.`);
+  // A retail handover is counted in whole bottles/packs (the purchase unit) -- the client
+  // walks out with a bottle, not "750 ml" -- so qty here is purchase units and gets converted
+  // to the stock unit (qtyBase) for the actual deduction, same convention the old
+  // stock.retailSale action used.
   const qty = positiveQuantity(data.qty, product, false);
+  const qtyBase = qty * (Number(product.ConvFactor) || 1);
   const balance = availableBalance(ctx, data.productId, locationId);
-  if (qty > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand at ${locationId}, tried to give ${qty} for FMS handover ${data.handoverId}.`);
+  if (qtyBase > balance) throw new Error(`INSUFFICIENT_STOCK: ${balance} ${product.IssueUOM} on hand at ${locationId}, tried to give ${qty} ${product.PurchaseUOM} for FMS handover ${data.handoverId}.`);
 
   const txnId = nextId("TXN");
-  const amount = qty * (Number(product.Cost) || 0);
+  const amount = qtyBase * (Number(product.Cost) || 0);
   await appendRow(token, "LEDGER", {
     TxnID: txnId, Date: dateToSerial(resolveTxnDate(data)), Type: "RETAIL_SALE", Direction: -1, ProductID: data.productId, Qty: qty,
-    UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, Amount: amount, Actor: actor, Status: "SOLD",
+    UOM: product.PurchaseUOM || product.IssueUOM, QtyBase: qtyBase, LocationID: locationId, Amount: amount, Actor: actor, Status: "SOLD",
     Notes: `FMS handover ${data.handoverId}${data.notes ? ` | ${data.notes}` : ""}`, ProductName: product.Name, TotalAmount: amount,
   });
-  await auditWrite(token, actor, "fms.create", txnId, { productId: data.productId, qty, locationId, handoverId: data.handoverId });
-  return { newBalance: balance - qty, uom: String(product.IssueUOM), locationId };
+  await auditWrite(token, actor, "fms.create", txnId, { productId: data.productId, qty, qtyBase, locationId, handoverId: data.handoverId });
+  return { newBalance: balance - qtyBase, uom: String(product.PurchaseUOM || product.IssueUOM), locationId };
 }
 
 /** Ported 1:1 from Operations.gs processStockAdjustment. */
