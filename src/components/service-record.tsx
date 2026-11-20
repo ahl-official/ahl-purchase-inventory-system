@@ -1,8 +1,9 @@
 'use client';
 import { useState, type ReactNode } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 import { Panel, Select, TextInput } from './ui/field';
 import { Button } from './ui/button';
+import { ProductPicker } from './product-picker';
 import { postAction } from '@/lib/api-client';
 import type { Catalogue } from '@/lib/catalogue';
 import { cn } from '@/lib/utils';
@@ -24,6 +25,7 @@ export function ServiceRecord({ catalogue, stock, locationId, recipes, busy, onS
   const [clientName, setClientName] = useState(''), [technician, setTechnician] = useState(''), [otherTechnician, setOtherTechnician] = useState('');
   const [service, setService] = useState(''), [date, setDate] = useState(todayISO());
   const [lines, setLines] = useState<ServiceLine[]>([]);
+  const [addProductId, setAddProductId] = useState('');
   const [extraError, setExtraError] = useState('');
 
   const technicians = catalogue.people.filter(p => p.role === 'Technician');
@@ -43,6 +45,17 @@ export function ServiceRecord({ catalogue, stock, locationId, recipes, busy, onS
     const recipe = recipes.find(r => r.service === name);
     setLines(recipe ? recipe.items.map(it => ({ productId: it.productId, productName: it.productName, unit: it.unit, qty: String(it.qty) })) : []);
   };
+
+  // The recipe only names "Color" -- the technician actually reaches for one of several
+  // shades/brands, so the line list has to be editable, not just the recipe's quantities.
+  const addLine = (productId: string) => {
+    setAddProductId('');
+    if (lines.some(l => l.productId === productId)) return;
+    const p = catalogue.products.find(x => x.id === productId);
+    if (!p) return;
+    setLines(ls => [...ls, { productId: p.id, productName: p.name, unit: p.uom, qty: '' }]);
+  };
+  const removeLine = (productId: string) => setLines(ls => ls.filter(l => l.productId !== productId));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,13 +80,18 @@ export function ServiceRecord({ catalogue, stock, locationId, recipes, busy, onS
       <Field title="Service" wide><Select required value={service} onChange={e => pickService(e.target.value)}><option value="">Select service</option>{recipes.map(r => <option key={r.service} value={r.service}>{r.service}</option>)}</Select></Field>
       <Field title="Date"><TextInput required type="date" value={date} max={todayISO()} onChange={e => setDate(e.target.value)} /></Field>
 
-      {lines.length > 0 && <div className="grid gap-3 sm:col-span-2">
-        {lines.map((line, i) => { const available = availableOf(line.productId); const cost = costOf(line); return <div key={line.productId} className="grid items-end gap-3 rounded-xl border p-3 sm:grid-cols-[1fr_8rem_8rem]">
+      {service && <div className="grid gap-3 sm:col-span-2">
+        {lines.map((line, i) => { const available = availableOf(line.productId); const cost = costOf(line); return <div key={line.productId} className="grid items-end gap-3 rounded-xl border p-3 sm:grid-cols-[1fr_8rem_8rem_2rem]">
           <div><p className="text-sm font-medium">{line.productName}</p><p className="text-xs text-muted-foreground">Available: {available} {line.unit}</p></div>
           <Field title={`Qty (${line.unit})`}><TextInput required type="number" min="0" step="any" max={available || undefined} value={line.qty} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, qty: e.target.value } : l))} /></Field>
           <p className="text-sm font-medium">₹{cost.toFixed(2)}</p>
+          <button type="button" aria-label={`Remove ${line.productName}`} onClick={() => removeLine(line.productId)} className="justify-self-end rounded-lg p-2 text-muted-foreground hover:bg-danger-subtle hover:text-danger"><X className="size-4" /></button>
         </div>; })}
-        <p className="text-sm font-semibold">Total cost: ₹{totalCost.toFixed(2)}</p>
+        <div>
+          <p className="mb-1 text-sm font-medium">Add a product used for this service</p>
+          <ProductPicker products={catalogue.products} vendors={[]} vendorId="" value={addProductId} onChange={addLine} unitOf={p => p.uom} balanceOf={p => availableOf(p.id)} />
+        </div>
+        {lines.length > 0 && <p className="text-sm font-semibold">Total cost: ₹{totalCost.toFixed(2)}</p>}
       </div>}
 
       {extraError && <p className="rounded-xl bg-danger-subtle p-3 text-sm text-danger sm:col-span-2">{extraError}</p>}
