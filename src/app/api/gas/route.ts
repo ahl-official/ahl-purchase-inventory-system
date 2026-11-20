@@ -16,6 +16,13 @@ import { readDirect, DIRECT_READ_ACTIONS, type DirectReadAction } from "@/lib/sh
 import { writeDirect, DIRECT_WRITE_ACTIONS, type DirectWriteAction } from "@/lib/sheets-write";
 import { readFms, writeFms, DIRECT_FMS_READ_ACTIONS, DIRECT_FMS_WRITE_ACTIONS, type DirectFmsReadAction, type DirectFmsWriteAction } from "@/lib/sheets-fms";
 
+/** fms.billTally alone chains loadContext() (the whole main sheet) + the FMS sheet's own
+ * read/write + a multi-step Drive upload (JWT mint, folder lookups, the upload itself) --
+ * easily 8-10 sequential round trips. Vercel's default serverless timeout (as low as 10s on
+ * some plans) can kill that mid-flight on a slow connection, after the Drive upload already
+ * succeeded but before the sheet write lands, looking exactly like "nothing saved". */
+export const maxDuration = 60;
+
 function isDirectReadAction(action: AppsScriptAction): action is DirectReadAction {
   return (DIRECT_READ_ACTIONS as readonly string[]).includes(action);
 }
