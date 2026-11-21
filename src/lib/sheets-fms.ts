@@ -28,7 +28,12 @@ import { recordFmsRetailDeduction } from "./sheets-write";
 
 const FMS_TAB = "FMS Tracker";
 const FMS_DATA_START_ROW = 5;
-const FMS_DATA_END_ROW = 1004;
+// The sheet used to carry live formulas (including several NOW()-based volatile timestamp
+// formulas) pre-filled across 1,000 rows, so Google Sheets had to recalculate roughly 10,000
+// formula cells on every single edit -- real overhead on every fms.create, even though only a
+// handful of rows were ever actually used. Rows 155-1004 have had their formulas cleared to
+// stop that, leaving 150 formula-backed rows (30x today's real usage) to grow into.
+const FMS_DATA_END_ROW = 154;
 const FMS_ROLES = ["PurchaseCoordinator", "ProductDistributor", "Admin"];
 /** The Technician dropdown's validation range (Lists!$A$2:$A$TECHNICIAN_LIST_BOUND) is sized once,
  * generously, so a growing technician roster never needs the validation rule touched again --
