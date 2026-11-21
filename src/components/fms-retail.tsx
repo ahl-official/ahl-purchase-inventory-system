@@ -58,7 +58,7 @@ function Badge({ text, tone }: { text: string; tone: 'open' | 'closed' | 'blocke
 
 export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { catalogue: Catalogue; stock: { productId: string; locationBalances?: Record<string, number> }[]; locationId: string; busy: boolean; onSubmit: (action: 'fms.create' | 'fms.applied' | 'fms.billTally' | 'fms.investigate' | 'fms.return', values: object) => Promise<boolean> }) {
   const [rows, setRows] = useState<FmsHandover[] | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('');
-  const [productId, setProductId] = useState(''), [qtyGiven, setQtyGiven] = useState(''), [technician, setTechnician] = useState('');
+  const [productId, setProductId] = useState(''), [qtyGiven, setQtyGiven] = useState(''), [technician, setTechnician] = useState(''), [otherTechnician, setOtherTechnician] = useState('');
   const [clientName, setClientName] = useState(''), [service, setService] = useState(''), [category, setCategory] = useState('');
   const [investmentLevel, setInvestmentLevel] = useState(''), [date, setDate] = useState(todayISO());
   const [billForms, setBillForms] = useState<Record<string, { qty: string; billNo: string; photo: CapturedPhoto | null }>>({});
@@ -84,8 +84,15 @@ export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { ca
   const submitCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!p) return;
-    const ok = await onSubmit('fms.create', { productId: p.id, productName: p.name, qtyGiven: Number(qtyGiven), technician, clientName, service, category, investmentLevel, date });
-    if (ok) { setProductId(''); setQtyGiven(''); setTechnician(''); setClientName(''); setService(''); setCategory(''); setInvestmentLevel(''); void load(); }
+    setError('');
+    let technicianName = technician;
+    if (technician === 'OTHER') {
+      const added = await postAction<{ id: string; name: string }>('person.add', { name: otherTechnician.trim(), locationId });
+      if (!added.ok || !added.data) { setError(added.ok ? 'Could not add that technician.' : added.message); return; }
+      technicianName = added.data.name;
+    }
+    const ok = await onSubmit('fms.create', { productId: p.id, productName: p.name, qtyGiven: Number(qtyGiven), technician: technicianName, clientName, service, category, investmentLevel, date });
+    if (ok) { setProductId(''); setQtyGiven(''); setTechnician(''); setOtherTechnician(''); setClientName(''); setService(''); setCategory(''); setInvestmentLevel(''); void load(); }
   };
   const submitApplied = async (handoverId: string, applied: 'Yes' | 'No') => { if (await onSubmit('fms.applied', { handoverId, applied })) void load(); };
   const submitBillTally = async (handoverId: string) => {
@@ -109,7 +116,8 @@ export function FmsRetail({ catalogue, stock, locationId, busy, onSubmit }: { ca
         <Field title="Product" wide><ProductPicker products={catalogue.products} vendors={catalogue.vendors} vendorId="" value={productId} required unitOf={x => x.purchaseUom} onChange={id => { setProductId(id); const prod = catalogue.products.find(x => x.id === id); if (!category) setCategory(guessFmsCategory(prod?.productType)); }} /></Field>
         {p && (available > 0 ? <p className="rounded-xl bg-brand-subtle p-3 text-sm text-brand sm:col-span-2">Available: <strong>{Number(available.toFixed(2))} {p.purchaseUom}</strong></p> : <p className="rounded-xl bg-danger-subtle p-3 text-sm text-danger sm:col-span-2">Nothing in stock here yet for this product.</p>)}
         <Field title={`Qty given${p?.purchaseUom ? ` (${p.purchaseUom})` : ''}`}><TextInput required disabled={!!p && available <= 0} type="number" min="0.001" max={available || undefined} step="any" value={qtyGiven} onChange={e => setQtyGiven(e.target.value)} /></Field>
-        <Field title="Technician"><TextInput required list="fms-technicians" value={technician} onChange={e => setTechnician(e.target.value)} placeholder="Type or pick a name" /><datalist id="fms-technicians">{technicians.map(t => <option key={t} value={t} />)}</datalist></Field>
+        <Field title="Technician"><Select required value={technician} onChange={e => setTechnician(e.target.value)}><option value="">Select technician</option>{technicians.map(t => <option key={t} value={t}>{t}</option>)}<option value="OTHER">Other</option></Select></Field>
+        {technician === 'OTHER' && <Field title="Technician name"><TextInput required value={otherTechnician} onChange={e => setOtherTechnician(e.target.value)} placeholder="Type the name once. It stays in the list." /></Field>}
         <Field title="Client name"><TextInput required value={clientName} onChange={e => setClientName(e.target.value)} /></Field>
         <Field title="Service"><TextInput value={service} onChange={e => setService(e.target.value)} /></Field>
         <Field title="Category"><Select value={category} onChange={e => setCategory(e.target.value)}><option value="">Select category</option>{FMS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</Select></Field>
