@@ -959,10 +959,12 @@ async function handleServiceRecord(token: string, actor: string, ctx: Ctx, data:
   const serviceRecordId = nextId("SVC");
   const now = dateToSerial(resolveTxnDate(data));
   let totalCost = 0;
+  const productSummaries: string[] = [];
   for (const [productId, qty] of qtyByProduct) {
     const product = getProduct(ctx, productId)!;
     const amount = qty * (Number(product.Cost) || 0);
     totalCost += amount;
+    productSummaries.push(`${product.Name} ${qty}${product.IssueUOM}`);
     await appendRow(token, "LEDGER", {
       TxnID: nextId("TXN"), Date: now, Type: "SERVICE_CONSUMPTION", Direction: -1, ProductID: productId, Qty: qty,
       UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, PersonID: technicianId,
@@ -973,7 +975,7 @@ async function handleServiceRecord(token: string, actor: string, ctx: Ctx, data:
 
   await appendRow(token, "SERVICE_RECORDS", {
     ServiceRecordID: serviceRecordId, Date: now, ClientName: clientName, Technician: technician.Name,
-    Service: service, LocationID: locationId, TotalCost: totalCost, Actor: actor, Notes: String(data.notes || ""),
+    Service: service, LocationID: locationId, Products: productSummaries.join(", "), TotalCost: totalCost, Actor: actor, Notes: String(data.notes || ""),
   });
 
   await auditWrite(token, actor, "service.record", serviceRecordId, { clientName, service, technicianId, totalCost });
