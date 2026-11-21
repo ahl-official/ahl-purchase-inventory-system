@@ -182,7 +182,7 @@ function mapRow(row: FmsRow): FmsHandover {
 
 // ---------------------------------------------------------------- handlers
 
-async function handleFmsCreate(token: string, headers: string[], rows: FmsRow[], actor: string, data: Record<string, unknown>) {
+async function handleFmsCreate(token: string, headers: string[], rows: FmsRow[], actor: string, ctx: Ctx, data: Record<string, unknown>) {
   const productId = String(data.productId || "").trim();
   const productName = String(data.productName || "").trim();
   const technician = String(data.technician || "").trim();
@@ -208,7 +208,7 @@ async function handleFmsCreate(token: string, headers: string[], rows: FmsRow[],
     Technician: technician, "Client Name": clientName, Service: String(data.service || "").trim(),
   });
 
-  const deduction = await recordFmsRetailDeduction(actor, { productId, qty: qtyGiven, notes: `FMS handover for ${clientName}`, handoverId, date: data.date as string | undefined });
+  const deduction = await recordFmsRetailDeduction(actor, ctx, { productId, qty: qtyGiven, notes: `FMS handover for ${clientName}`, handoverId, date: data.date as string | undefined });
 
   await writeCells(token, headers, rowNumber, { "Handover Check": "Handover OK" });
   return { handoverId, rowNumber, newBalance: deduction.newBalance, uom: deduction.uom, locationId: deduction.locationId };
@@ -308,11 +308,14 @@ export async function readFms(action: DirectFmsReadAction, actor: string): Promi
 export async function writeFms(action: DirectFmsWriteAction, actor: string, data: Record<string, unknown>): Promise<unknown> {
   const ctx = await requireFmsUser(actor);
   const token = await getFmsToken();
-  if (action === "fms.create") await syncFmsTechnicianList(token, ctx);
+  // Keeping the sheet's Technician dropdown in sync is cosmetic housekeeping, not part of
+  // recording this handover -- it must never make the actor wait on it, and a failure here
+  // (e.g. a transient Sheets API hiccup) must never block or fail the real write.
+  if (action === "fms.create") void syncFmsTechnicianList(token, ctx).catch((err) => console.error("syncFmsTechnicianList failed:", err));
   const headers = await readHeaders(token);
   const rows = await readRows(token, headers);
   switch (action) {
-    case "fms.create": return handleFmsCreate(token, headers, rows, actor, data);
+    case "fms.create": return handleFmsCreate(token, headers, rows, actor, ctx, data);
     case "fms.applied": return handleFmsApplied(token, headers, rows, data);
     case "fms.billTally": return handleFmsBillTally(token, headers, rows, actor, data);
     case "fms.investigate": return handleFmsInvestigate(token, headers, rows, data);

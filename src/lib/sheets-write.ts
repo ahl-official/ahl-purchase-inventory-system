@@ -101,13 +101,26 @@ async function readTabRaw(token: string, sheetName: string): Promise<{ headers: 
 
 /** Ported 1:1 from Db.gs appendRecord: unknown key is a hard error, missing key is left blank. */
 async function appendRow(token: string, sheetName: string, record: Record<string, unknown>): Promise<void> {
+  return appendRows(token, sheetName, [record]);
+}
+
+/**
+ * Same contract as appendRow, for several rows at once -- one values:append call and (for a
+ * sorted tab) one sort, instead of one full read+append+sort round trip per row. A service or
+ * handover with several product lines used to pay for that whole cycle once per line; this is
+ * the difference between a multi-second save and a near-instant one as the line count grows.
+ */
+async function appendRows(token: string, sheetName: string, records: Record<string, unknown>[]): Promise<void> {
+  if (!records.length) return;
   const { headers } = await readTabRaw(token, sheetName);
-  for (const key of Object.keys(record)) {
-    if (!headers.includes(key)) throw new Error(`SCHEMA_ERROR: '${sheetName}' has no column '${key}'. Columns are: ${headers.filter(Boolean).join(", ")}`);
+  for (const record of records) {
+    for (const key of Object.keys(record)) {
+      if (!headers.includes(key)) throw new Error(`SCHEMA_ERROR: '${sheetName}' has no column '${key}'. Columns are: ${headers.filter(Boolean).join(", ")}`);
+    }
   }
-  const row = headers.map((h) => (h && h in record ? (record[h] ?? "") : ""));
+  const values = records.map((record) => headers.map((h) => (h && h in record ? (record[h] ?? "") : "")));
   await sheetsFetch(token, `/values/${encodeURIComponent(sheetName)}!A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
-    method: "POST", body: JSON.stringify({ values: [row] }),
+    method: "POST", body: JSON.stringify({ values }),
   });
   if (SORT_BY_DATE_TABS.has(sheetName)) await sortTabByDate(token, sheetName, headers);
 }
@@ -661,7 +674,7 @@ async function handleReceiptChange(token: string, actor: string, ctx: Ctx, data:
   }
 
   // Replacements first, voids last (see function doc) -- a mid-sequence failure over-counts stock, never under-counts it.
-  for (const replacement of replacements) await appendRow(token, "LEDGER", replacement);
+  await appendRows(token, "LEDGER", replacements);
   for (const row of selected) {
     const suffix = ` | ${deleting ? "Deleted" : "Replaced"} by ${actor}: ${reason}`;
     await updateRow(token, "LEDGER", "TxnID", String(row.TxnID), { Status: "VOID", Notes: `${String(row.Notes || "")}${suffix}` }, (fresh) => {
@@ -960,18 +973,21 @@ async function handleServiceRecord(token: string, actor: string, ctx: Ctx, data:
   const now = dateToSerial(resolveTxnDate(data));
   let totalCost = 0;
   const productSummaries: string[] = [];
+  const ledgerRows: Record<string, unknown>[] = [];
   for (const [productId, qty] of qtyByProduct) {
     const product = getProduct(ctx, productId)!;
     const amount = qty * (Number(product.Cost) || 0);
     totalCost += amount;
     productSummaries.push(`${product.Name} ${qty}${product.IssueUOM}`);
-    await appendRow(token, "LEDGER", {
+    ledgerRows.push({
       TxnID: nextId("TXN"), Date: now, Type: "SERVICE_CONSUMPTION", Direction: -1, ProductID: productId, Qty: qty,
       UOM: product.IssueUOM, QtyBase: qty, LocationID: locationId, PersonID: technicianId,
       Amount: amount, Actor: actor, Status: "CONSUMED", Notes: `Service: ${service} | Client: ${clientName} | ${serviceRecordId}`,
       ProductName: product.Name, TotalAmount: amount,
     });
   }
+  // One append + one sort for every product line in this service, not one full cycle per line.
+  await appendRows(token, "LEDGER", ledgerRows);
 
   await appendRow(token, "SERVICE_RECORDS", {
     ServiceRecordID: serviceRecordId, Date: now, ClientName: clientName, Technician: technician.Name,
@@ -990,9 +1006,8 @@ async function handleServiceRecord(token: string, actor: string, ctx: Ctx, data:
  * stored as a RETAIL_SALE ledger row (same Type the old retail-sale form used), so existing
  * history filters and the monthly inventory report keep recognizing it with no extra plumbing.
  */
-export async function recordFmsRetailDeduction(actor: string, data: { productId: string; qty: number; notes?: string; handoverId: string; date?: string }): Promise<{ newBalance: number; uom: string; locationId: string }> {
+export async function recordFmsRetailDeduction(actor: string, ctx: Ctx, data: { productId: string; qty: number; notes?: string; handoverId: string; date?: string }): Promise<{ newBalance: number; uom: string; locationId: string }> {
   const token = await getWriteAccessToken();
-  const ctx = await loadContext();
   const user = getUser(ctx, actor);
   if (!user || !isTruthy(user.Active)) throw new Error("FORBIDDEN: Your account could not be found or is inactive.");
   const locationId = actorLocation(ctx, actor);
@@ -1189,15 +1204,15 @@ async function handleStockHandoverLines(token: string, actor: string, ctx: Ctx, 
 
   const now = dateToSerial(resolveTxnDate(data));
   const ids: string[] = [];
+  const handoverLedgerRows: Record<string, unknown>[] = [];
   for (const line of prepared) {
     const handoverId = nextId("HND");
-    await appendRow(token, "LEDGER", {
+    handoverLedgerRows.push({
       TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: -1, ProductID: line.productId, Qty: line.qty,
       UOM: line.product.IssueUOM, QtyBase: line.qty, LocationID: fromLocationId, HandoverID: handoverId,
       PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
       ProductName: line.product.Name,
-    });
-    await appendRow(token, "LEDGER", {
+    }, {
       TxnID: nextId("TXN"), Date: now, Type: "HANDOVER", Direction: 1, ProductID: line.productId, Qty: line.qty,
       UOM: line.product.IssueUOM, QtyBase: line.qty, LocationID: toLocationId, HandoverID: handoverId,
       PersonID: data.toUserId || "", Actor: actor, Status: "PENDING_CONFIRM", Notes: data.notes || "",
@@ -1205,6 +1220,7 @@ async function handleStockHandoverLines(token: string, actor: string, ctx: Ctx, 
     });
     ids.push(handoverId);
   }
+  await appendRows(token, "LEDGER", handoverLedgerRows);
   for (const line of prepared) {
     if (line.requestId) await updateRow(token, "REQUESTS", "RequestID", line.requestId, { Status: "SUPPLIED" });
   }
@@ -1421,7 +1437,7 @@ async function handleStockReceiveLines(token: string, actor: string, ctx: Ctx, d
       ProductName: line.product.Name, TotalAmount: amount + (gstAmount === "" ? 0 : Number(gstAmount)),
     };
   });
-  for (const row of rows) await appendRow(token, "LEDGER", row);
+  await appendRows(token, "LEDGER", rows);
   for (const line of prepared) {
     if (line.hasAmount && line.qtyBase > 0) await updateRow(token, "PRODUCTS", "ProductID", String(line.productId), { Cost: line.amount / line.qtyBase });
   }
